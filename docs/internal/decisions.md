@@ -162,7 +162,7 @@ Two things verified against the 3.2.0 source, both easy to get wrong:
   stateless unit struct; the usual `tool_router` field + constructor is dead
   weight unless you opt in with `#[tool_handler(router = self.tool_router)]`.
 
-### 14. Minimal dependency set — accepted, **updated by decisions 33 and 35**
+### 14. Minimal dependency set — accepted, **updated by decisions 33, 35 and 41**
 
 `rmcp` (no default features), `tokio` (no default features), `serde`. That is
 all. Notably absent and deliberately so:
@@ -181,6 +181,15 @@ all. Notably absent and deliberately so:
 > digest the embedded payload at build time (decision 33); it is not linked into
 > the shipped binary. And `chrono` **leaves** once `system_health` moves to the
 > core crate, because a `no_std` core formats RFC 3339 itself (decision 35).
+
+> **Updated 2026-09-18 by decisions 41 and 42.** `sha2` is now linked into the
+> shipped binary as well as used at build time — the local machine's probe is
+> hashed in-process (decision 41), so "not linked into the shipped binary" above
+> is no longer true. `libc` becomes direct, for `fgetxattr` (file capabilities
+> are invisible to the hash), `geteuid` and `O_NOFOLLOW`; it was already present
+> transitively through `tokio`. `stethoscope-core` is a path dependency holding
+> the storage wire types. `tokio` gains its `process` and `time` features, to run
+> a probe and kill it at a deadline — decision 16's `tokio::process` arriving.
 
 ### 16. Blocking work goes to the blocking pool, not an async worker — accepted, **subject changed by decision 37**
 
@@ -1059,7 +1068,7 @@ Recorded limits on the measurement:
   it maps. Neither affects transfer size, and the `mmap` arena is lazily
   faulted, but it is the reason the resident sizes differ.
 
-### 29. Probes are transferred by `sftp` and cached on the target — accepted, **discovery order corrected by decision 38**
+### 29. Probes are transferred by `sftp` and cached on the target — accepted, **discovery order corrected by decision 38; `/tmp` removed by decision 40**
 
 The probe is transferred with `sftp` and left on the target as a durable,
 content-addressed cache. Its filename is its own content hash. It is **not**
@@ -1143,6 +1152,12 @@ is writable, otherwise `$HOME/.stethoscope`, otherwise `/tmp`.**
 > the hash to verify, the directory to be writable by neither group nor world,
 > and the file to actually be executable — the last of which this decision never
 > checked for anywhere.
+
+> **`/tmp` removed 2026-09-18 by decision 40.** Both chains lose their last
+> link: the read chain is `/opt/stethoscope` then `$HOME/.stethoscope`, and the
+> write chain is `$HOME/.stethoscope` alone. The `/tmp` reasoning below — its
+> complementary `noexec` failure mode, its OS sweep, its lack of quotas — is
+> kept as the record of what was given up.
 
 * `/opt` is the FHS-correct home for add-on software and the most legible to an
   analyst, who reads `/opt/stethoscope/stethoscope-storage-<hash>` as installed
@@ -1247,26 +1262,29 @@ payload so the model can weigh RAM against disk. It also keeps `/dev` and
 `efivarfs`, which are marginal, and that is the price of a non-judgmental rule.
 
 **Identity is `major:minor`, and the mount source is dropped at the parser.**
-mountinfo identifies `/` as `252:1`, never `/dev/mapper/data-root`. The device
+mountinfo identifies the root filesystem by its device id, never by the device
+mapper path behind it. The device
 id answers the one operationally necessary question the source string was needed
 for — are two mountpoints the same filesystem, so is this free space
 double-counted? — while carrying no device path and, decisively, no NFS or CIFS
 address when a remote target arrives. Decision 9 refuses addresses to the model;
 this is the same leak arriving through a different door, closed without losing
-anything real. Measured on the development host, `/dev/shm` and `/run/qemu` both
-report 16,742,326,272 bytes and are distinct filesystems (`0:31` and `0:40`); a
-model without the device id would add them.
+anything real. Measured on the development host, two tmpfs mounts report equal
+totals under different device ids and are genuinely distinct filesystems; a
+model without the device id would add them together.
 
-**`f_bavail` and `f_bfree` both ship, because the gap is enormous.** On `/`:
-free is 104,764,918 blocks, available is 92,669,533, at a 4,096-byte frame size
-— a reserve of ~49.5 GB, 5.09% of the filesystem. A model told "429 GB free" is
-wrong by 49 GB about what an unprivileged service can actually write, and "df
+**`f_bavail` and `f_bfree` both ship, because the gap is enormous.** On the
+development host's root filesystem the root-reserved pool — free minus
+available — is 5.09% of the filesystem, so the free figure overstates available
+space by about 13%. A model told only the free figure is wrong by that much
+about what an unprivileged service can actually write, and "df
 shows free space but writes fail" is exactly the failure this tool exists to
 explain. Decision 18's rule that denominators travel with their numerators
 covers this directly.
 
 **Inodes are `Option`, absent rather than zero.** vfat has no inode concept and
-reports `f_files == 0`; `/boot/efi` and `/recovery` therefore omit the block
+reports `f_files == 0`; the vfat mounts on the development host therefore omit
+the block
 entirely, the way a PSI-less kernel omits `pressure`. A filesystem at 1.7%
 bytes-used and 100% inodes-used is a failure that is invisible from byte
 capacity alone.
@@ -1337,7 +1355,7 @@ Recorded limits:
   would be a weaker control than a written one, and the mountinfo read that
   feeds this capability is already a static entry.
 
-### 31. Target state is cached in memory for the life of the process — accepted, **`local` case amended by decision 37**
+### 31. Target state is cached in memory for the life of the process — accepted, **`local` case amended by decision 37 and settled by decision 42**
 
 The server keeps one in-memory entry per target, built by a discovery call and
 discarded when the process exits. Nothing is written to disk.
@@ -1447,12 +1465,15 @@ Recorded limits:
   round trip, so the *reason* for caching largely evaporates even though the
   fields do not. Whether `local` gets a cache entry for uniformity or is
   answered directly on each call is deliberately left open.
+
+  **Settled 2026-09-18 by decision 42:** answered directly on each call, with
+  no cache entry. Running the whole chain every call is what decision 37 wants.
 * **Two sessions may both push the same payload**, each believing it absent.
   Content-addressing makes that benign — identical bytes, same path.
 * **The ten-minute TTL is unmeasured.** Nothing has been run against a real
   fleet.
 
-### 32. The server adds to a target's namespace; it never modifies the target — accepted, **scope clarified by decision 37; "collectors write nothing" promoted by decision 39**
+### 32. The server adds to a target's namespace; it never modifies the target — accepted, **scope clarified by decision 37; "collectors write nothing" promoted by decision 39; `/tmp` fallback removed by decision 40**
 
 This is the invariant that replaces "every tool is a pure read" now that
 decision 29 writes a collector to remote machines, and it is what resolves
@@ -1557,6 +1578,12 @@ group-writable `/opt` unacceptable in decision 29. If that directory already
 exists and is owned by someone else, the location is refused rather than used:
 on a shared host it is exactly what an attacker would pre-create.
 
+> **The `/tmp` fallback is gone as of 2026-09-18 (decision 40)**, and with it
+> the pre-creation attack this paragraph was written against: nobody but the
+> user can create an entry in their own home. The rule — refuse a probe
+> directory owned by someone else — still applies to `~/.stethoscope`, and
+> decision 42 adds the same check one level up, to the directory that holds it.
+
 **A mismatched payload is not deleted.** Silently removing a planted binary
 destroys the only evidence that anyone tried. The split is by recency:
 
@@ -1594,7 +1621,7 @@ Recorded limits:
 > review are recorded as open questions 12–14 in `current-state.md` rather than
 > decided here.
 
-### 33. The payload is embedded in the server binary and built by an `xtask` — accepted, **dev-build path amended by decision 37; distribution added by decision 38**
+### 33. The payload is embedded in the server binary and built by an `xtask` — accepted, **dev-build path amended by decision 37; distribution added by decision 38; runtime SHA-256 settled by decision 41; build paths remapped out of releases 2026-09-18**
 
 The server carries every probe it can push, as `include_bytes!`, one per
 capability per architecture. Nothing is located on disk at runtime. Probes are
@@ -1696,6 +1723,11 @@ compares strings.
 > `sha2` becomes a runtime dependency after all and decision 14's amendment is
 > wrong. Neither is chosen here. See open question 15.
 
+> **Settled 2026-09-18 by decision 41:** `sha2` is linked at runtime and the
+> local probe is hashed in-process. A remote target still hashes with its own
+> `sha256sum`, and the server still only compares strings — decision 42's rules
+> take a hex digest and do not know who computed it.
+
 **The manifest must be publishable, and nothing in decisions 28–32 published
 it.** Decision 28's strongest argument is that a security team can pin and
 allowlist a probe's hash — which requires obtaining the hashes *before* the
@@ -1715,6 +1747,52 @@ toolchain alone is not expressible, so the server gets pinned too. Accepted
 deliberately — it is one file, and it makes a toolchain bump a visible act
 whose consequence (every probe hash rolls at once, per decision 28) is
 understood at the moment it is taken.
+
+> **Amended 2026-09-18: a release binary must not contain the paths of the
+> machine that built it, and `cargo xtask release` enforces this.** rustc
+> records absolute source paths as panic locations. The workspace's own crates
+> are recorded relative (`src/main.rs`), but dependencies are compiled from
+> `$CARGO_HOME/registry` and generic standard-library code from `$RUSTUP_HOME`
+> when `rust-src` is installed, and those paths contain the builder's home
+> directory and username. Measured on a release server: 133 such strings. The
+> probe had none — `no_std`, `panic = "abort"` and stripped leave no panic
+> locations to record — and the `include_bytes!` path is read at compile time
+> and never stored.
+>
+> This is the repository-wide rule in `CLAUDE.local.md` — nothing identifying a
+> real machine is published — applied to the one artifact that is published.
+> It is also a reproducibility requirement: a binary embedding where it was
+> built cannot be rebuilt byte-for-byte anywhere else, which undermines a
+> published hash manifest.
+>
+> **The mechanism is rustc's `--remap-path-prefix`**, set by `cargo xtask
+> release` itself for every cargo invocation it makes: `$HOME` → `/home`,
+> `$CARGO_HOME` → `/cargo`, `$RUSTUP_HOME` → `/rustup`, the workspace root →
+> `/build` (and the target directory, if it lies outside the root). Passed as
+> `CARGO_ENCODED_RUSTFLAGS`, so a path containing a space survives, and
+> appended to any rustflags the caller set rather than replacing them. Measured
+> with these rules: zero home-path strings and zero occurrences of the username
+> in the release server, and **an unchanged probe hash** — remapping costs
+> reproducibility nothing.
+>
+> **It belongs in the `xtask`, not in a workflow file or `.cargo/config.toml`.**
+> A workflow would protect only builds that run through it; a release built on a
+> laptop would leak again. A config file cannot expand `$HOME`, so it would have
+> to hardcode a path — publishing the very thing it exists to remove.
+>
+> **The remap is the mechanism; a scan is the control.** After building,
+> `cargo xtask release` searches the server binary and every staged probe for
+> each remapped-away prefix and fails if one is present. A dependency that
+> embeds a path by some route the remap does not cover then fails the release
+> rather than shipping. The scan's logic is unit-tested with a planted path.
+>
+> Limits: `cargo xtask release` builds the host architecture only, and is
+> otherwise `cargo xtask dev --release --locked`. The matrix, the manifest,
+> `--extract-payload` and the archives are still unbuilt. The scan looks for the
+> remapped prefixes, not for every string that could identify a machine — a
+> hostname, say, embedded by a build script, would not be caught. Dev builds are
+> deliberately not remapped: debuggers and editors resolve sources through those
+> paths.
 
 **Rejected: `build.rs` invoking `cargo` to build the probes.** It would make
 `cargo build` produce a complete artifact, which is genuinely attractive.
@@ -2059,7 +2137,7 @@ Recorded limits:
   builds against `x86_64-unknown-linux-gnu`. It is strong evidence and it is not
   the same thing as having built the real probe that way.
 
-### 38. Probes are distributed, not only embedded — and an installed directory is read-only in the chain — accepted, **extended by decision 39**
+### 38. Probes are distributed, not only embedded — and an installed directory is read-only in the chain — accepted, **extended by decision 39; `/tmp` removed from both chains by decision 40; directory rule extended by decision 42**
 
 Releases ship the probe binaries themselves, pre-named exactly as the server
 looks for them, and the server can extract its own embedded copies. Decision
@@ -2107,6 +2185,12 @@ The two chains, with no overlap and no conditional membership:
 |---|---|---|
 | **read** | `/opt/stethoscope`, `$HOME/.stethoscope`, `/tmp/stethoscope` | is there a payload here I can verify and execute? first hit wins |
 | **write** | `$HOME/.stethoscope`, `/tmp/stethoscope` | where may I place one, having found none? |
+
+> **Amended 2026-09-18 by decision 40.** `/tmp/stethoscope` is removed from both
+> rows. The chains are now `/opt/stethoscope`, `$HOME/.stethoscope` (read) and
+> `$HOME/.stethoscope` (write). The symlink gap recorded below was written about
+> `/tmp/stethoscope` and applies equally to `~/.stethoscope`; decision 42 closes
+> it for both by refusing any candidate that is not a real directory.
 
 **What using an installed payload actually requires**, since "found it" is not
 sufficient and hash verification alone is not either:
@@ -2389,3 +2473,252 @@ Recorded limits:
 * **`ptrace` and core dumps are disabled by the kernel for elevated binaries**,
   so debugging a privileged probe differs from debugging an ordinary one. Noted
   because it will be surprising in the moment.
+
+---
+
+## Session decisions (2026-09-18)
+
+> Taken while designing and building the probe prologue — the code every
+> probe-backed tool runs before its probe does. 40 and 41 were decided before
+> any code was written; 42 records what building it settled. `storage_health`
+> is the first tool collected by a probe.
+
+### 40. Probes live in `/opt/stethoscope` or `~/.stethoscope`, never `/tmp` — accepted, **amends decisions 29, 32 and 38**
+
+The read chain is `/opt/stethoscope`, then `$HOME/.stethoscope`. The write chain
+is `$HOME/.stethoscope` alone. `/tmp` is in neither.
+
+**The rule becomes one sentence a user can hold:** *unless you install the probe
+under `/opt/stethoscope`, it is cached in `~/.stethoscope`.* Three locations
+with conditional fallthrough between them was a paragraph, and the README would
+have had to carry it.
+
+**`/tmp` was never compatible with the probe being a cache.** Decision 29 made
+the probe a durable, content-addressed cache precisely so that it is *not* a
+per-session deployment, and then kept a fallback location the OS sweeps on
+reboot or on age. A cache in `/tmp` is re-transferred on a schedule nobody
+chose, which is the staging-shaped behaviour decision 29 rejected in other
+words. Decision 29's own recorded limit named the sweep as "a real point in
+`/tmp`'s favour" — true for tidiness, and the opposite of what a cache wants.
+
+**It also removes the location with the hardest threat model.** Decision 32's
+attack — another unprivileged user pre-creating the directory at a predictable
+name — is only possible in a world-writable parent. Nobody but the user can
+create an entry in their own home. The symlink gap decision 38 recorded was
+written about `/tmp/stethoscope`; it no longer has a shared directory to arrive
+through, though decision 42 still refuses a symlinked `~/.stethoscope`.
+
+Recorded limits:
+
+* **A host with a `noexec` home and no `/opt` install cannot be inspected.**
+  Previously that took `noexec` on both home and `/tmp`. Decision 29 calls
+  `noexec` home an NFS-export convention common in enterprise and academic
+  fleets, so this population is larger than the one decision 37 accepted. The
+  argument is decision 37's, unchanged, and so is the fix: one directory.
+* **Accounts with no usable home fail cleanly.** Service accounts whose home is
+  `/` or nonexistent, or `$HOME` unset, get `no_home` or `not_writable` rather
+  than a fallback.
+* **A full home quota is terminal.** Decision 29 required a clean error; with no
+  second location it is the only outcome (`no_space`).
+* **An NFS-shared home is one cache for many hosts.** Placement stays benign —
+  architectures differ in hash and therefore in name — but open question 14
+  gets harder: garbage collection by one host's server version could remove a
+  probe another host's server is using.
+
+### 41. The local probe is hashed in-process with `sha2` — accepted, **settles open question 15; amends decisions 14 and 33**
+
+`sha2` is a runtime dependency. On `local` the server hashes the probe itself;
+a remote target will still hash with its own `sha256sum`.
+
+**Why not shell out to the local `sha256sum`.** It puts a subprocess on the most
+common path in the product, makes coreutils a hard dependency, and turns
+decision 32's recorded limit — "verification depends on the target's own
+`sha256sum`" — self-referential on the one machine where the digest can simply
+be computed.
+
+**The drift decision 37 fears does not arrive through this.** Decision 42's rules
+take a hex digest as one field of the facts about a location and compare it to a
+string; they do not know or care who computed it. The two transports differ in
+*how the fact is gathered*, which they already had to — `lstat` against `stat`
+output — and not in how it is judged.
+
+**Hashing from the descriptor makes the local check stronger than the remote one
+can be.** The file is opened `O_NOFOLLOW`, and its owner, mode, capability
+xattr and contents are all read from that one descriptor, so they describe one
+file. Remote collection cannot do this through `stat` and `sha256sum` output,
+and that asymmetry is accepted: it is in the gathering, not the rules.
+
+Recorded limits:
+
+* **Cost unmeasured.** `sha2` is pure Rust and brings `digest`, `block-buffer`,
+  `hybrid-array`, `typenum`, `crypto-common`, `const-oid` and `cpufeatures`.
+  Nothing has been measured against the server binary's size.
+* **Hash-then-exec is still two operations.** The descriptor is hashed; the path
+  is executed. The window between them is closed by the directory rules, as
+  decision 32 says it must be, not by the hash. `fexecve` on the hashed
+  descriptor would close it locally and was not adopted: nothing equivalent
+  exists over SSH, and a local-only strengthening is the divergence decision 37
+  exists to prevent.
+
+### 42. The prologue: rules separated from facts, and what they check — accepted, **settles decision 31's `local` question; extends decision 38**
+
+`src/prologue.rs` is what every probe-backed tool runs before its probe:
+resolve through the read chain, place into home if nothing usable was found,
+execute, collect. Its design choices, several of which go beyond decisions
+32–40:
+
+**The rules are one pure function over gathered facts.** `judge` takes the
+metadata of the parent directory, the probe directory and the probe file, plus
+the file's digest and whether it carries a capability xattr, and returns
+*usable*, *absent* or *refused with a reason*. It touches no filesystem, so it is
+unit-tested with fixtures — including the cases no unprivileged test can
+produce, like a directory owned by a third user. Gathering, placing and spawning
+are the parts a remote transport replaces (decision 31's discovery output
+parsed into the same facts). This is the transport seam architecture.md
+predicted, and it is still two functions and a struct rather than a trait
+(decision 11).
+
+**The rules**, extending decision 38 in three places:
+
+| check | `/opt/stethoscope` | `~/.stethoscope` |
+|---|---|---|
+| parent (`/opt`, `$HOME`) owned by root or us, not group/world-writable | required if `/opt/stethoscope` exists | required |
+| probe directory is a real directory, not a symlink | required | required |
+| probe directory owner | root or us | us |
+| probe directory group/world-writable | refused | refused |
+| probe file is a regular file, owner as for the directory, not group/world-writable | required | required |
+| contents hash to the name | required | required |
+| setuid, setgid or `security.capability` | honoured if root-owned and not world-executable | refused |
+| read / write | read only, never tested for writability | both |
+
+* **The parent check is new.** Without it, whoever can write to `$HOME` can
+  rename `~/.stethoscope` away and put their own in its place after we checked
+  it. `sshd`'s `StrictModes` applies the same rule to `~/.ssh`'s parent, and
+  refuses a group-writable home for the same reason.
+  For `/opt` it applies only when `/opt/stethoscope` exists: found by testing
+  through MCP in a user namespace, where the host's root-owned `/opt` appears
+  owned by the overflow uid and every call reported `installed: unsafe_parent`
+  for a location holding nothing. Home keeps the check unconditionally, because
+  a missing `~/.stethoscope` is about to be created in that parent.
+* **The file gets the owner and mode rules, not only the directory.** A probe
+  owned by a third user in a root-owned directory is still theirs to rewrite
+  between our hash and our exec.
+* **Elevation is detected from the file, not the hash** — the mode's setuid and
+  setgid bits and the `security.capability` xattr — because `setcap` leaves the
+  contents byte-identical (current-state findings, 2026-09-17).
+
+**Elevation is honoured in `/opt` from the start**, per decision 39 as written.
+The alternative considered was refusing elevated probes everywhere until
+decision 39's disassembly check exists. It was not chosen. What still waits on
+that check is decision 39's other precondition: elevation is not *documented as
+supported* until the check is in CI.
+
+**What the model is told** is a category for the call and one reason per
+location — `installed: absent, home: hash_mismatch` — as an MCP error carrying
+the same in structured `data`. Never a path: `$HOME` contains the username
+(decision 9). Paths, errno and the stray-file inventory go to stderr. This
+settles the prologue's part of open question 13; the per-row vocabulary is
+still open, and so is open question 2's channel.
+
+The reasons: `absent`, `no_home`, `unsafe_parent`, `not_a_directory`,
+`unsafe_owner`, `unsafe_mode`, `not_a_regular_file`, `hash_mismatch`,
+`elevated_outside_installed`, `elevated_unsafe`, `not_executable`, `no_space`,
+`not_writable`, `io_error`. Call-level categories: `payload_unavailable`,
+`no_usable_probe`, `probe_failed`, `timed_out`, `malformed_output`.
+
+**Placement** creates the directory and the file mode 700 and then sets the mode
+explicitly, because the umask can only remove bits — the finding that `sftp`
+honoured two different target umasks applies to `mkdir` just as well. The file
+is written under a temporary name in the same directory and renamed into place,
+so a concurrent session sees no probe or a whole one. Then the location is
+**judged again from scratch**: nothing we wrote is trusted for having been
+written by us.
+
+**Execution** gives the probe no arguments, no environment, `/` as its working
+directory and `/dev/null` as stdin (decision 39's standing constraint, enforced
+at the call site rather than only promised by the probe). A probe that has not
+finished in ten seconds is killed. An `EACCES`, `EPERM` or `ENOEXEC` from exec in
+`/opt` falls through to home (decision 38).
+
+**`local` has no cache entry.** Decision 31 left this open. Resolution is a
+handful of `stat` calls and one hash; running the whole chain every call is the
+point of decision 37.
+
+**Not decided here: files with an unknown hash.** Decision 32 says a
+`stethoscope-*` file with an unknown hash and a recent mtime is suspicious and
+refuses the location. Building this showed that rule breaks the tool on every
+upgrade, and permanently while two server versions run side by side — each
+version's freshly placed probe is the other's "recent, unknown hash". The
+prologue therefore **logs such files and leaves them, without refusing the
+location**, pending a decision. See open question 16 in `current-state.md`.
+
+Recorded limits:
+
+* ~~**The ownership rules are only partly exercised on a real filesystem.**~~
+  **Now exercised, by decision 43's privileged tier** — a real third user, a
+  real root-owned install, real `setcap` and setuid. The first run of it found a
+  defect the unit tests could not: when a third user's directory or file was
+  mode 700, *gathering* the facts failed with `EACCES` before the rules saw the
+  ownership, and the location was refused as `io_error` rather than
+  `unsafe_owner`. Still refused, never executed — but the model was told the
+  wrong reason. Fixed by recording an unreadable file as a fact
+  (`file_unknowable`, or a file with no digest) so the owner rule decides.
+* **The namespace `/opt` cases are a stand-in**; decision 43's privileged tier is
+  the real root-owned install. Decision 38's warning that the operator install
+  path will be exercised first by a stranger now applies to hosts unlike an
+  Ubuntu runner, not to the path itself.
+* **`elevated_unsafe` checks world-execute, not group.** An operator who grants a
+  capability to a probe executable by a broad group has made a choice the server
+  honours.
+* **Remote gathering must include the capability xattr**, and `getcap` and
+  `getfattr` are not guaranteed to be installed on a target. Decision 31's
+  discovery command does not yet ask for it. Unsolved.
+* **Ten seconds is a guess**, like decision 31's TTL. Revisit it against a real
+  hung mount rather than defend it.
+* **Nothing is ever deleted.** Garbage collection waits on open question 14; the
+  prologue only reports other versions, and loudly when an `/opt` install is
+  stale (decision 38's recorded limit).
+
+### 43. Every probe-backed tool is held to the prologue's constraints in CI — accepted
+
+`.github/workflows/prologue.yml` runs the same prologue cases for every
+probe-backed tool, driven by `scripts/prologue/tools.json`. A tool is
+probe-backed exactly when its output reports **`probe_location`** (decision 38),
+and every such tool must also report **`privileged`** (decision 39). That
+contract is what makes the cases tool-independent.
+
+**Adding a tool is one line in `tools.json`.** Its `arguments` must make a
+successful call on a bare runner. A tool needing more — a running container,
+for `container_health` — is the one foreseeable per-tool cost, and gets an
+optional setup field when it arrives rather than before.
+
+**The coverage gate fails the build.** `coverage.sh` asks the server for its
+tools and fails if one reports `probe_location` without being listed, or a
+listed one lacks either field. Without it, the natural failure is a new tool
+shipping with no prologue coverage and nothing saying so.
+
+**Two tiers.** `unprivileged.sh` needs no root and runs anywhere; its `/opt`
+cases use a user namespace. `privileged.sh` builds fixtures with sudo — a real
+root-owned install, a real third user, real `setcap` and setuid grants, real
+`noexec` and full filesystems — and runs only in CI or on an explicitly
+disposable machine. **sudo builds fixtures and nothing else: the server always
+runs as the unprivileged runner user**, and the script refuses to start as
+root. It also refuses to run if `/opt/stethoscope` exists, so it cannot destroy
+a real install.
+
+**Skipping is failing.** Ubuntu 24.04 runners block unprivileged user
+namespaces, so the namespace cases would pass silently by skipping. The workflow
+enables them and passes `--require-all`, which turns a skip into a failure.
+
+**No path filter.** Almost any change can break the prologue. A filter that
+misses one path is a check that silently stops running.
+
+Recorded limits:
+
+* **One runner image.** Everything here is Ubuntu 24.04 on x86_64. A host whose
+  `/opt` is on another filesystem, or with a different AppArmor or SELinux
+  policy, is untested.
+* **The deadline is still untested.** No case produces a probe that hangs.
+* **Has not yet run on GitHub.** Both tiers and the gate were run in an Ubuntu
+  24.04 container configured like a runner, where they found the defect recorded
+  in decision 42's limits.

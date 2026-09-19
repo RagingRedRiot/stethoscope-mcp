@@ -1,8 +1,15 @@
-//! The read guard: the one place that decides which paths this server may open.
+//! The read guard: the one place that decides which paths this server may read
+//! the *contents* of as collected data.
 //!
-//! Every read in the crate goes through [`crate::proc::read`] or
-//! [`crate::proc::read_optional`], and both ask this module first. Nothing else
-//! opens a file.
+//! Every such read in the crate goes through [`crate::proc::read`] or
+//! [`crate::proc::read_optional`], and both ask this module first. Two things
+//! touch the filesystem outside its remit, on purpose, and neither puts file
+//! contents in front of the model: `statvfs`, which the storage probe calls and
+//! which returns fixed-shape capacity figures about a path (decision 36), and
+//! the probe prologue
+//! (`crate::prologue`), which hashes, places and executes probe binaries in
+//! `/opt/stethoscope` and `~/.stethoscope` under rules of its own (decisions 32,
+//! 38 and 40).
 //!
 //! The control is an **allowlist**, not a denylist. A denylist has to enumerate
 //! every dangerous file forever, and it loses outright to renaming: a symlink at

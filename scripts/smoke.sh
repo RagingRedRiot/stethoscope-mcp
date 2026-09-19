@@ -7,12 +7,19 @@
 # perfectly legitimate client. Needs jq; nothing else.
 #
 # Usage: scripts/smoke.sh [path-to-binary]     (default: target/debug/stethoscope-mcp)
+#
+# Build with `cargo xtask dev`: storage_health runs an embedded probe, which a
+# plain `cargo build` does not carry. The server runs with HOME pointed at a
+# scratch directory, so the probe it places never lands in your own home;
+# scripts/prologue/ covers placement and refusal in detail.
 
 set -euo pipefail
 
 BIN="${1:-target/debug/stethoscope-mcp}"
-[ -x "$BIN" ] || { echo "no executable at '$BIN' — run 'cargo build' first" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "no executable at '$BIN' — run 'cargo xtask dev' first" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "smoke.sh needs jq" >&2; exit 1; }
+SCRATCH_HOME="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH_HOME"' EXIT
 
 # The handshake is mandatory: initialize, then the initialized notification,
 # before any tool call. Ids let us match replies below; the notification has none.
@@ -25,7 +32,8 @@ OUT=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"system_health","arguments":{"target":"local"}}}' \
   '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"container_list","arguments":{"target":"local"}}}' \
   '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"container_health","arguments":{"target":"local","container":"definitely-not-a-container"}}}' \
-  | timeout 10 "$BIN")
+  '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"storage_health","arguments":{"target":"local"}}}' \
+  | HOME="$SCRATCH_HOME" timeout 10 "$BIN")
 
 reply() { printf '%s' "$OUT" | jq -c "select(.id==$1)"; }
 
@@ -44,9 +52,9 @@ echo "smoke: $BIN"
 check "server identifies as stethoscope-mcp" \
     "$(reply 1 | jq -r '.result.serverInfo.name')" "stethoscope-mcp"
 
-check "advertises all four tools" \
+check "advertises all five tools" \
     "$(reply 2 | jq -r '[.result.tools[].name] | sort | join(",")')" \
-    "container_health,container_list,system_health,system_info"
+    "container_health,container_list,storage_health,system_health,system_info"
 
 # Every tool takes a target (decision 15), so assert it of all of them rather
 # than of whichever happens to be first. Tools acting on one container require
@@ -100,6 +108,15 @@ check "container_list reports no names or images (decision 24)" \
 # An ID that does not exist is a malformed request, not an unreachable machine.
 check "unknown container is rejected as invalid_params" \
     "$(reply 7 | jq -r '.error.code')" "-32602"
+
+# The first tool collected by a probe (decision 37): placed in the scratch
+# home, hash-verified, executed, and its output parsed into the core type.
+check "storage_health runs its probe from the home cache" \
+    "$(reply 8 | jq -r '.result.structuredContent.probe_location')" "home"
+
+check "every storage row is either measured or says why not" \
+    "$(reply 8 | jq -r '[.result.structuredContent.filesystems[]
+                        | has("capacity") != has("unavailable")] | all')" "true"
 
 echo
 if [ "$fail" -eq 0 ]; then

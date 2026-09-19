@@ -2,8 +2,8 @@
 //!
 //! Decision 35 makes this crate `no_std` + `alloc` and puts collection, the
 //! response types and the read guard in it. **Today it holds only the response
-//! types**, moved here from `probes/storage/` so that the probe that writes the
-//! storage wire format and the server that reads it cannot disagree about it —
+//! types**, one module per probe, so that the probe that writes a wire
+//! format and the server that reads it cannot disagree about it —
 //! the drift decision 28 exists to prevent. Collection and the guard have not
 //! moved yet.
 //!
@@ -17,3 +17,4 @@
 extern crate alloc;
 
 pub mod storage;
+pub mod system_info;

@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use rmcp::ErrorData;
+use rmcp::{ErrorData, schemars};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::payload::{self, Payload};
@@ -51,11 +53,12 @@ const MAX_PROBE_BYTES: u64 = 8 << 20;
 
 /// Which link of the chain a payload came from. Reported to the model per
 /// payload (decision 38).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Location {
-    /// `/opt/stethoscope`, put there by an operator.
+    /// `/opt/stethoscope`, installed by an operator.
     Installed,
-    /// `$HOME/.stethoscope`, placed by this server.
+    /// The server's own cache in the invoking user's home directory.
     Home,
 }
 
@@ -417,7 +420,7 @@ fn note_strays(location: Location, dir: &Path, payload: &Payload, found: bool) {
     };
     let strays = entries
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with(&prefix) && !payload::is_ours(n))
+        .filter(|n| is_version_of(n, &prefix) && !payload::is_ours(n))
         .count();
     if strays == 0 {
         return;
@@ -436,6 +439,16 @@ fn note_strays(location: Location, dir: &Path, payload: &Payload, found: bool) {
             payload.capability,
         );
     }
+}
+
+/// Whether `name` is some version of the probe whose names start `prefix`
+/// (`stethoscope-<capability>-`): the prefix, then a 64-digit hex hash.
+/// Checking the hash keeps `stethoscope-container-list-…` from counting as a
+/// version of a capability named `container`.
+fn is_version_of(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.get(..64))
+        .is_some_and(|hash| hash.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +697,39 @@ pub async fn run(capability: &'static str) -> Result<Output, ErrorData> {
     }
 }
 
+/// A probe's report, with what only the server knows about how it was
+/// collected. Every probe-backed tool returns one of these.
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct Collected<T> {
+    /// The target this was collected from.
+    pub target: String,
+    /// Where the probe that collected this ran from. An operator-installed
+    /// probe may carry elevated authority (see `privileged`); one in the home
+    /// cache never does.
+    pub probe_location: Location,
+    #[serde(flatten)]
+    pub report: T,
+}
+
+/// Run the probe for `capability` and parse its report into `T`, the type the
+/// probe serialized from core. A probe emitting anything else is an error here
+/// rather than something passed through to the model.
+pub async fn collect<T: DeserializeOwned>(
+    capability: &'static str,
+    target: String,
+) -> Result<Collected<T>, ErrorData> {
+    let out = run(capability).await?;
+    let report = serde_json::from_slice(&out.stdout).map_err(|e| {
+        eprintln!("stethoscope-mcp: {capability} probe emitted unparseable output: {e}");
+        failure(capability, "malformed_output", &[])
+    })?;
+    Ok(Collected {
+        target,
+        probe_location: out.location,
+        report,
+    })
+}
+
 /// The model-facing failure: a category for the call and one per location,
 /// with no paths (decision 9). Whether this belongs on the error channel at
 /// all is open question 2.
@@ -922,6 +968,27 @@ mod tests {
             judge(Location::Home, ME, &facts, HASH),
             refused(Reason::IoError)
         );
+    }
+
+    #[test]
+    fn another_capabilitys_probe_is_not_a_version_of_this_one() {
+        let hash = "a".repeat(64);
+        assert!(is_version_of(
+            &format!("stethoscope-container-{hash}"),
+            "stethoscope-container-"
+        ));
+        assert!(is_version_of(
+            &format!("stethoscope-container-{hash}.tmp-42"),
+            "stethoscope-container-"
+        ));
+        assert!(!is_version_of(
+            &format!("stethoscope-container-list-{hash}"),
+            "stethoscope-container-"
+        ));
+        assert!(!is_version_of(
+            "stethoscope-container-",
+            "stethoscope-container-"
+        ));
     }
 
     #[test]

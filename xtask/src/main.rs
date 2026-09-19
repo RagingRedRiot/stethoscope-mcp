@@ -19,7 +19,10 @@ use std::{env, fs};
 
 /// Capability name → probe package. The capability name is what the server
 /// asks for and what goes into the filename `stethoscope-<capability>-<hash>`.
-const PROBES: &[(&str, &str)] = &[("storage", "stethoscope-storage")];
+const PROBES: &[(&str, &str)] = &[
+    ("storage-health", "stethoscope-storage-health"),
+    ("system-info", "stethoscope-system-info"),
+];
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);

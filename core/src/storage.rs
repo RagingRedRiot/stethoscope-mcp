@@ -1,6 +1,6 @@
 //! The `storage_health` wire format (decision 30).
 //!
-//! Written by `probes/storage/`, read by the server. `Serialize` is what the
+//! Written by `probes/storage-health/`, read by the server. `Serialize` is what the
 //! probe uses and `Deserialize` is what the server uses; a probe never calls
 //! the latter, so LTO strips it, exactly as it strips `JsonSchema` (decision
 //! 28).

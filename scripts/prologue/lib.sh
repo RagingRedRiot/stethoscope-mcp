@@ -3,7 +3,7 @@
 # Every probe-backed tool is checked against the same prologue constraints, so
 # the cases are written once and parameterized by one entry of tools.json:
 #
-#   { "tool": "storage_health", "capability": "storage", "arguments": {...} }
+#   { "tool": "storage_health", "capability": "storage-health", "arguments": {...} }
 #
 # `arguments` must produce a successful call on a bare CI runner.
 #

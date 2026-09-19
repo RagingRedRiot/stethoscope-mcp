@@ -18,9 +18,9 @@ tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-th
 sha2 = "0.11.0"
 
 [workspace]
-members = [".", "core", "probes/storage", "xtask"]
-# Probes are excluded: they build only under [profile.probe] and are built by
-# `cargo xtask dev`, never by a plain `cargo build` (decision 33).
+members = [".", "core", "probes/rt", "probes/storage-health", "probes/system-info", "xtask"]
+# Probes and their runtime are excluded: they build only under [profile.probe]
+# and are built by `cargo xtask dev`, never by a plain `cargo build` (decision 33).
 default-members = [".", "core", "xtask"]
 resolver = "3"
 

@@ -30,9 +30,14 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --locked -- -D warnings
-      # Probes are not default members and build only under the probe profile
-      # with an explicit target (decision 33), so they are linted separately.
-      - run: cargo clippy --locked -p stethoscope-storage --profile probe --target x86_64-unknown-linux-gnu -- -D warnings
+      # Probes and their runtime are not default members and build only under
+      # the probe profile with an explicit target (decision 33), so they are
+      # linted separately — every crate under probes/.
+      - run: |
+          for manifest in probes/*/Cargo.toml; do
+            pkg=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest")
+            cargo clippy --locked -p "$pkg" --profile probe --target x86_64-unknown-linux-gnu -- -D warnings
+          done
 
   test:
     name: cargo test

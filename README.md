@@ -88,6 +88,14 @@ hashed names above. There is no packaged way to obtain them yet — they are the
 files under `target/payload/<arch>/` after a build, renamed to include their
 hash.
 
+An install is used only if `/opt` itself, `/opt/stethoscope` and each probe are
+owned by root and writable by neither group nor world. If anyone else could
+write to `/opt`, they could swap `/opt/stethoscope` for a directory of their
+own, so the server ignores the install and falls back to `~/.stethoscope`, with
+an `unsafe_parent` line on stderr. Some images loosen `/opt` — GitHub's hosted
+runners make it mode 777 — so check it with `stat -c '%U %a' /opt` if an
+install is not being picked up.
+
 A machine where `~/.stethoscope` is on a `noexec` mount, and `/opt/stethoscope`
 does not exist, cannot be inspected.
 

@@ -2673,6 +2673,12 @@ Recorded limits:
 * **Remote gathering must include the capability xattr**, and `getcap` and
   `getfattr` are not guaranteed to be installed on a target. Decision 31's
   discovery command does not yet ask for it. Unsolved.
+* **Hosts with a world-writable `/opt` exist, and on them an install is never
+  used.** Found on GitHub's hosted runners (decision 43's limits), which make
+  `/opt` mode 777. The parent rule refusing it is correct, and collection falls
+  back to home, which is safe. The cost is an operator who installed into `/opt`
+  and cannot see why the install is ignored: stderr says `unsafe_parent`, and the
+  README now states the requirement on `/opt` itself.
 * **Ten seconds is a guess**, like decision 31's TTL. Revisit it against a real
   hung mount rather than defend it.
 * **Nothing is ever deleted.** Garbage collection waits on open question 14; the
@@ -2719,6 +2725,14 @@ Recorded limits:
   `/opt` is on another filesystem, or with a different AppArmor or SELinux
   policy, is untested.
 * **The deadline is still untested.** No case produces a probe that hangs.
-* **Has not yet run on GitHub.** Both tiers and the gate were run in an Ubuntu
-  24.04 container configured like a runner, where they found the defect recorded
-  in decision 42's limits.
+* **A container is not the runner image.** Both tiers passed first in a stock
+  `ubuntu:24.04` container and then failed on GitHub (PR #3, 2026-09-19): every
+  `/opt` case in the privileged tier was refused with `unsafe_parent`, because
+  GitHub's runner image runs `chmod -R 777 /opt`
+  (`images/ubuntu/scripts/build/configure-system.sh` in `actions/runner-images`).
+  The prologue was right — a world-writable `/opt` lets anyone swap
+  `/opt/stethoscope` out from under it — and the fixtures had assumed a normal
+  `/opt`. `privileged.sh` now records `/opt`'s owner and mode, sets root:root 755
+  for the run (on `/opt` alone), restores it on exit, and **P0** tests the
+  world-writable case on purpose. A rehearsal must now start from the runner's
+  conditions, not the distribution's defaults.

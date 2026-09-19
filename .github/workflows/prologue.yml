@@ -25,13 +25,13 @@ jobs:
     name: build server and probes
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask dev --locked
       # tar keeps the exec bits, which upload-artifact does not.
       - run: tar -cf prologue-build.tar target/debug/stethoscope-mcp target/payload
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: prologue-build
           path: prologue-build.tar
@@ -44,8 +44,8 @@ jobs:
     outputs:
       tools: ${{ steps.matrix.outputs.tools }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: prologue-build
       - run: tar -xf prologue-build.tar
@@ -63,8 +63,8 @@ jobs:
       matrix:
         tool: ${{ fromJSON(needs.plan.outputs.tools) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: prologue-build
       - run: tar -xf prologue-build.tar

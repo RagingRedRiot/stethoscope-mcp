@@ -198,14 +198,17 @@ Everything, in full:
     `/opt` cases in a user namespace: an install used with nothing written to
     home, `noexec` falling through, setuid declined or honoured by mode, a stale
     install with a warning. `--require-all` makes a skip a failure.
-  * `privileged.sh` — thirteen cases whose fixtures only root can make, run in
+  * `privileged.sh` — fourteen cases whose fixtures only root can make, run in
     CI (or with `PROLOGUE_ALLOW_SUDO_FIXTURES=1` on a disposable machine):
     a real root-owned install, a real third user owning the install directory,
     the installed probe, `~/.stethoscope` or the cached probe, a group-writable
     install directory, **real `setcap` and setuid grants honoured and declined**
     with `privileged` checked, a real `noexec` mount, a full home giving
-    `no_space`. sudo builds fixtures only; the server runs unprivileged, and the
-    script refuses to run as root or to touch an existing `/opt/stethoscope`.
+    `no_space`, and a world-writable `/opt` refusing an otherwise perfect
+    install (P0). It sets `/opt` to root:root 755 for the run and restores it,
+    because GitHub's runner image makes it 777. sudo builds fixtures only; the
+    server runs unprivileged, and the script refuses to run as root or to touch
+    an existing `/opt/stethoscope`.
   * `coverage.sh` — fails if a tool reporting `probe_location` is missing from
     `tools.json`, or a listed tool lacks `probe_location` or `privileged`.
 * `.github/workflows/ci.yml` — build, clippy (including the probe under its own
@@ -214,8 +217,10 @@ Everything, in full:
 * `.github/workflows/prologue.yml` — builds once, runs the coverage gate, then
   one matrix job per tool in `tools.json` running both tiers, with unprivileged
   user namespaces enabled and a `stethoscope-other` user created. No path
-  filter. **Has not run on GitHub yet**: both tiers and the gate were run in an
-  Ubuntu 24.04 container set up like a runner.
+  filter. **First GitHub run (PR #3)**: the gate and the unprivileged tier
+  passed; the privileged tier's `/opt` cases failed because the runner's `/opt`
+  is mode 777 — the prologue correctly refusing, the fixtures wrong. Fixed as
+  above; decision 43's limits have the detail.
 * `probes/storage/` — the `storage_health` probe. 11,064 bytes, `no_std` +
   `alloc` + `serde_json`, raw syscalls, statically linked, built to decision
   30's payload shape. Opens exactly one file, `/proc/self/mountinfo`. A

@@ -15,6 +15,13 @@
 # so it can never destroy a real install. It expects a user named
 # stethoscope-other to exist (the workflow creates it).
 #
+# /opt itself must be owned by root and writable by neither group nor world, or
+# the prologue refuses any install beneath it (decision 42) — and GitHub's
+# runner image runs `chmod -R 777 /opt`. So the script records /opt's owner
+# and mode, sets root:root 755 for the run (on /opt alone, not recursively),
+# and restores both on exit. P0 then tests the runner's original condition
+# deliberately.
+#
 # Usage: scripts/prologue/privileged.sh [--tool NAME] [--bin PATH] [--require-all]
 
 source "$(dirname "$0")/lib.sh"
@@ -32,14 +39,23 @@ id "$OTHER" >/dev/null 2>&1 || refuse "needs a user named $OTHER (sudo useradd -
 [ ! -e "$OPT" ] || refuse "$OPT already exists; refusing to touch a real install"
 command -v setcap >/dev/null || [ -x /usr/sbin/setcap ] || refuse "needs setcap (libcap2-bin)"
 SETCAP="$(command -v setcap || echo /usr/sbin/setcap)"
+[ -d /opt ] || refuse "needs an /opt directory"
+OPT_OWNER="$(stat -c '%u:%g' /opt)"
+OPT_MODE="$(stat -c '%a' /opt)"
 
 MOUNTS=()
 cleanup() {
     for m in "${MOUNTS[@]}"; do sudo umount "$m" 2>/dev/null || true; done
     sudo umount "$OPT" 2>/dev/null || true
     sudo rm -rf "$OPT" "$SCRATCH"
+    sudo chown "$OPT_OWNER" /opt
+    sudo chmod "$OPT_MODE" /opt
 }
 trap cleanup EXIT
+
+# The precondition every /opt case below assumes: a safe parent.
+safe_opt() { sudo chown root:root /opt; sudo chmod 755 /opt; }
+safe_opt
 
 reset_opt() { sudo umount "$OPT" 2>/dev/null || true; sudo rm -rf "$OPT"; }
 
@@ -53,8 +69,17 @@ opt_install() {
 }
 
 echo "privileged [$TOOL]: $BIN (server runs as uid $(id -u), fixtures via sudo)"
+echo "  /opt was $OPT_OWNER mode $OPT_MODE; set to root:root 755 for the run, restored on exit"
 
 # --- /opt: a real operator install -------------------------------------------
+
+H=$(home p0)
+sudo chmod 777 /opt
+opt_install root:root 755 root:root 755
+R=$(call "$H")
+check "P0  a world-writable /opt refuses an otherwise perfect install, falling through to home" \
+    "$(stderr_has "refused: unsafe_parent") $(location <<<"$R")" "yes home"
+safe_opt
 
 H=$(home p1)
 opt_install root:root 755 root:root 755

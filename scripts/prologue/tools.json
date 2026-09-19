@@ -1,0 +1,3 @@
+[
+  { "tool": "storage_health", "capability": "storage", "arguments": { "target": "local" } }
+]

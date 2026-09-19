@@ -1,0 +1,15 @@
+[package]
+name = "stethoscope-storage"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Decision 28's settled serialization: no_std + alloc + serde_json. The types,
+# and their JsonSchema derive, come from core; the derive costs a probe zero
+# after LTO.
+[dependencies]
+stethoscope-core = { path = "../../core" }
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
+
+# Size and panic settings come from [profile.probe] at the workspace root, and
+# the freestanding link flags from build.rs (decision 33).

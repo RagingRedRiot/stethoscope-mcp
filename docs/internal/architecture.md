@@ -333,7 +333,10 @@ result `proc::read` and `proc::read_optional` already produce locally:
 
 ## The payload
 
-> Designed, none of it built. Decisions 28, 29, 31, 32, 33 and 34.
+> Decisions 28, 29, 31, 32, 33, 37, 38, 40, 41 and 42. **Built for `local` and
+> one capability as of 2026-09-18** — embedding, discovery, the ownership and
+> hash checks, placement and exec, in `src/prologue.rs`. Everything remote and
+> everything release-shaped is still design; `current-state.md` has the split.
 
 Remote collection does not send a command; it runs a program. This section is
 the end-to-end life of that program, because it is the part of the design that
@@ -386,14 +389,16 @@ exception to the promise below.
 `/opt/stethoscope` is a **read-only** location, without exception. The server
 never creates it, never writes to it, and never tests whether it could — writing
 there requires root, and collection must never run as root. Discovery is
-therefore two chains rather than one: a read chain (`/opt`, `$HOME`, `/tmp`)
+therefore two chains rather than one: a read chain (`/opt`, then `$HOME`)
 asking *is there a payload here I can verify and execute*, and a write chain
-(`$HOME`, `/tmp`) asking *where may I place one*. Using what it finds takes more
-than a matching name — the hash must verify, the directory must be writable by
-neither group nor world, and the file must actually be executable.
+(`$HOME` alone) asking *where may I place one*. `/tmp` is in neither (decision
+40): a cache the OS sweeps is not a cache. Using what it finds takes more than a
+matching name — the hash must verify, the directory and the one above it must
+be writable by nobody less privileged than us, and the file must actually be
+executable (decision 42 has the full table).
 
-That same directory is the escape hatch for a host where `$HOME` and `/tmp` are
-both `noexec` — the case decision 37 otherwise declines to serve.
+That same directory is the escape hatch for a host where `$HOME` is `noexec` —
+the case decisions 37 and 40 otherwise decline to serve.
 
 **There is exactly one collection mechanism.** Not "one for local, one for
 remote, kept in agreement" — one. The reason is not elegance: it is that
@@ -550,8 +555,8 @@ deliberately not a target type, trait, or registry.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| v0.1 | Local, read-only inspection | in progress — four tools exist; `storage_health` designed, unbuilt |
-| v0.1 infrastructure | Workspace, core crate, embedded payload, probe chain on `local`, `xtask` release | designed, not started — decisions 33, 35, 36, 37, 38, 39 (34 is reversed and is not part of the plan) |
+| v0.1 | Local, read-only inspection | in progress — five tools exist; `storage_health` runs as a probe, the other four are still in-process |
+| v0.1 infrastructure | Workspace, core crate, embedded payload, probe chain on `local`, `xtask` release | in progress — workspace, `xtask dev`, embedding and the probe chain on `local` built (decisions 40–42); core holds types only; no `xtask release`, manifest, extraction or disassembly check (decisions 33, 35, 38, 39). 34 is reversed and is not part of the plan |
 | v0.2 | Remote targets via user's OpenSSH; `Tag stethoscope-mcp` discovery; capability probes | designed, not started — decisions 28, 29, 31, 32; blocked on interactive SSH auth |
 | v0.3 | Narrowly scoped mutations, after an explicit security design discussion | not started, deliberately |
 

@@ -1,0 +1,15 @@
+[package]
+name = "stethoscope-storage-health"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The types, and their JsonSchema derive, come from core; the derive costs a
+# probe zero after LTO. The runtime — syscalls, entry, allocator, and emitting
+# the report as JSON (decision 28) — comes from probes/rt.
+[dependencies]
+stethoscope-core = { path = "../../core" }
+stethoscope-probe-rt = { path = "../rt" }
+
+# Size and panic settings come from [profile.probe] at the workspace root, and
+# the freestanding link flags from build.rs (decision 33).

@@ -1,3 +1,4 @@
 [
-  { "tool": "storage_health", "capability": "storage", "arguments": { "target": "local" } }
+  { "tool": "storage_health", "capability": "storage-health", "arguments": { "target": "local" } },
+  { "tool": "system_info", "capability": "system-info", "arguments": { "target": "local" } }
 ]

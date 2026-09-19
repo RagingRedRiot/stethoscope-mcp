@@ -1,4 +1,4 @@
-# `stethoscope-storage`
+# `stethoscope-storage-health`
 
 The `storage_health` probe. Decision 30's payload, on decision 28's process
 shape — one capability, one statically linked `no_std` binary, raw syscalls, no
@@ -6,11 +6,11 @@ arguments, no environment, no subprocesses, one JSON document on stdout.
 
 ```sh
 cargo xtask dev                                                     # from the repo root
-./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage | jq
-probes/storage/verify.sh                                            # re-derives every claim below
+./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage-health | jq
+probes/storage-health/verify.sh                                            # re-derives every claim below
 ```
 
-11,064 bytes. It opens exactly one file — `/proc/self/mountinfo` — which is the
+11,232 bytes. It opens exactly one file — `/proc/self/mountinfo` — which is the
 single static allowlist entry decision 36 says is all `storage_health` needs
 guarding.
 
@@ -27,8 +27,8 @@ the repo root does not touch it (decision 33). `cargo xtask dev` builds it with
 the rest of the payload and embeds it in the server:
 
 ```sh
-cargo build --profile probe --target x86_64-unknown-linux-gnu -p stethoscope-storage
-# -> target/x86_64-unknown-linux-gnu/probe/stethoscope-storage
+cargo build --profile probe --target x86_64-unknown-linux-gnu -p stethoscope-storage-health
+# -> target/x86_64-unknown-linux-gnu/probe/stethoscope-storage-health
 ```
 
 **One binary per capability is the design, not a convenience** (decision 28).
@@ -54,9 +54,9 @@ profile's `panic = "unwind"` has no meaning in a `no_std` binary.
 Three levels, cheapest first:
 
 ```sh
-./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage | jq   # look at it
-probes/storage/verify.sh                                           # assert on it
-strace -c ./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage   # what it did
+./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage-health | jq   # look at it
+probes/storage-health/verify.sh                                           # assert on it
+strace -c ./target/x86_64-unknown-linux-gnu/probe/stethoscope-storage-health   # what it did
 ```
 
 `verify.sh` is the test suite. It rebuilds, runs the probe twice and makes
@@ -81,9 +81,10 @@ allocator at test time.
 
 ### Other architectures
 
-Not yet possible: **the runtime is x86_64-only and not arch-gated.** `rt.rs`
-uses `syscall` with rax/rdi/rsi/rdx, a naked `_start` written in x86 assembly,
-and a `struct statfs` laid out for x86_64. Building for aarch64 fails to
+Not yet possible: **the runtime is x86_64-only and not arch-gated.** The shared
+runtime (`probes/rt/src/sys.rs`) uses `syscall` with rax/rdi/rsi/rdx and a naked
+`_start` written in x86 assembly, and this probe's `statfs.rs` lays out
+`struct statfs` for x86_64. Building for aarch64 fails to
 compile rather than producing a wrong binary, which is the right failure.
 
 Decision 28 records what the second architecture costs — `svc #0` with
@@ -100,6 +101,11 @@ ownership, executes it and parses its output (`src/prologue.rs`; decisions 37,
 
 Not built:
 
+* **The runtime is shared, since 2026-09-19.** Syscalls, entry, allocator,
+  panic handler and emitting the report live in `probes/rt/` (decision 44);
+  this crate holds only `collect.rs`, its `statfs` wrapper, and the function
+  that builds the report. Moving the runtime changed this binary's hash, as
+  expected, and grew it by 168 bytes; its output and syscall set did not change.
 * **Core holds the types and nothing else.** The response types moved to
   `stethoscope-core` (decision 35) and this crate links them, so the probe that
   writes the wire format and the server that reads it share one definition.

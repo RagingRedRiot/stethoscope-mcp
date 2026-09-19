@@ -1,14 +1,16 @@
-//! Freestanding runtime: raw syscalls, a stack-aligning entry stub, a panic
-//! handler, and the `mem*` intrinsics the linker demands.
+//! Raw syscalls, the entry stub, the panic handler, and the `mem*` intrinsics
+//! the linker demands of a freestanding binary.
 //!
 //! Per-architecture and hand-written, which decision 28 records as roughly
 //! thirty lines each: x86_64 `syscall` with rax/rdi/rsi/rdx here, aarch64
 //! `svc #0` with x8/x0/x1/x2 when the release matrix needs it.
 //!
-//! The syscall set is deliberately small and enumerable, per decision 32:
-//! `open`, `read`, `close`, `write`, `statfs`, `mmap`, `exit`, plus `getuid`,
-//! `geteuid` and `capget` for the privilege flag. Decision 39 makes that set a
-//! CI control before any probe may be elevated.
+//! Only syscalls every probe may need live here: `open`, `read`, `close`,
+//! `write`, `mmap`, `exit`, and `getuid`, `geteuid` and `capget` for the
+//! privilege flag. A probe's own syscalls — `statfs`, `uname` — live in that
+//! probe, built on [`syscall3`] and friends, so each probe's syscall set stays
+//! as small as its capability (decision 32, and decision 39's disassembly
+//! check).
 
 use core::arch::{asm, naked_asm};
 use core::ffi::c_void;
@@ -22,8 +24,11 @@ pub const SYS_EXIT: usize = 60;
 pub const SYS_GETUID: usize = 102;
 pub const SYS_GETEUID: usize = 107;
 pub const SYS_CAPGET: usize = 125;
-pub const SYS_STATFS: usize = 137;
 
+/// # Safety
+///
+/// `n` must be a syscall number and the arguments valid for it: any argument
+/// the kernel dereferences must point to memory valid for that access.
 #[inline(always)]
 pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
     let r: isize;
@@ -34,6 +39,10 @@ pub unsafe fn syscall1(n: usize, a1: usize) -> isize {
     r
 }
 
+/// # Safety
+///
+/// `n` must be a syscall number and the arguments valid for it: any argument
+/// the kernel dereferences must point to memory valid for that access.
 #[inline(always)]
 pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     let r: isize;
@@ -45,6 +54,10 @@ pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> isize {
     r
 }
 
+/// # Safety
+///
+/// `n` must be a syscall number and the arguments valid for it: any argument
+/// the kernel dereferences must point to memory valid for that access.
 #[inline(always)]
 pub unsafe fn syscall6(
     n: usize,
@@ -111,48 +124,10 @@ pub fn read_file(path: &[u8], buf: &mut [u8]) -> usize {
     off
 }
 
-/// The kernel's `struct statfs` for x86_64: 120 bytes, all 64-bit words.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct Statfs {
-    pub f_type: u64,
-    pub f_bsize: u64,
-    pub f_blocks: u64,
-    pub f_bfree: u64,
-    pub f_bavail: u64,
-    pub f_files: u64,
-    pub f_ffree: u64,
-    pub f_fsid: u64,
-    pub f_namelen: u64,
-    pub f_frsize: u64,
-    pub f_flags: u64,
-    pub f_spare: [u64; 4],
-}
-
-/// `ST_RDONLY`, as reported in `f_flags`. Present since Linux 2.6.36.
-pub const ST_RDONLY: u64 = 1;
-
-/// `statfs(2)` on a NUL-terminated path. On failure returns the negated errno
-/// the kernel gave, because decision 30 reports *why* a mount could not be
-/// measured rather than dropping the row.
+/// # Safety
 ///
-/// This is `statfs(2)`, not glibc's `statvfs(3)` — there is no `statvfs`
-/// syscall, and with no libc there is nothing to wrap it. The fields decision
-/// 30 names are the same ones; see this crate's README for the one place the
-/// two differ (`f_frsize` as the frame size).
-pub fn statfs(path: &[u8]) -> Result<Statfs, i32> {
-    let mut s = Statfs::default();
-    let r = unsafe {
-        syscall3(
-            SYS_STATFS,
-            path.as_ptr() as usize,
-            &mut s as *mut Statfs as usize,
-            0,
-        )
-    };
-    if r < 0 { Err(-r as i32) } else { Ok(s) }
-}
-
+/// `n` must be a syscall number and the arguments valid for it: any argument
+/// the kernel dereferences must point to memory valid for that access.
 #[inline(always)]
 pub unsafe fn syscall2(n: usize, a1: usize, a2: usize) -> isize {
     let r: isize;
@@ -210,9 +185,17 @@ pub fn cap_effective() -> u64 {
     (data[1].effective as u64) << 32 | data[0].effective as u64
 }
 
+unsafe extern "C" {
+    /// Defined in each probe by [`probe!`](crate::probe).
+    fn stethoscope_probe_main() -> !;
+}
+
 // The kernel enters at `_start` with RSP 16-byte aligned, but the SysV ABI has
 // callees assume RSP%16 == 8 on entry (as left by a CALL). Without this stub
 // every SSE spill in the callee faults.
+/// # Safety
+///
+/// The process entry point. Only the kernel calls it.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
@@ -220,7 +203,7 @@ pub unsafe extern "C" fn _start() -> ! {
         "xor rbp, rbp",
         "and rsp, -16",
         "call {main}",
-        main = sym crate::probe_main,
+        main = sym stethoscope_probe_main,
     )
 }
 
@@ -235,6 +218,9 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 // mismatch, and a warning on every build of the binary that most wants a clean
 // one is a warning nobody reads.
 
+/// # Safety
+///
+/// The C library contract: the pointers must be valid for `n` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memcpy(d: *mut c_void, s: *const c_void, n: usize) -> *mut c_void {
     let (dst, src) = (d as *mut u8, s as *const u8);
@@ -246,6 +232,9 @@ pub unsafe extern "C" fn memcpy(d: *mut c_void, s: *const c_void, n: usize) -> *
     d
 }
 
+/// # Safety
+///
+/// The C library contract: the pointers must be valid for `n` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memmove(d: *mut c_void, s: *const c_void, n: usize) -> *mut c_void {
     let (dst, src) = (d as *mut u8, s as *const u8);
@@ -265,6 +254,9 @@ pub unsafe extern "C" fn memmove(d: *mut c_void, s: *const c_void, n: usize) -> 
     d
 }
 
+/// # Safety
+///
+/// The C library contract: the pointers must be valid for `n` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memset(d: *mut c_void, c: i32, n: usize) -> *mut c_void {
     let dst = d as *mut u8;
@@ -276,6 +268,9 @@ pub unsafe extern "C" fn memset(d: *mut c_void, c: i32, n: usize) -> *mut c_void
     d
 }
 
+/// # Safety
+///
+/// The C library contract: the pointers must be valid for `n` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     let (x, y) = (a as *const u8, b as *const u8);
@@ -290,6 +285,9 @@ pub unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) ->
     0
 }
 
+/// # Safety
+///
+/// The C library contract: the pointers must be valid for `n` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     unsafe { memcmp(a, b, n) }

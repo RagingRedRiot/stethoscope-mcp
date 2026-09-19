@@ -619,11 +619,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "stethoscope-storage"
+name = "stethoscope-probe-rt"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "serde_json",
+]
+
+[[package]]
+name = "stethoscope-storage-health"
+version = "0.0.0"
+dependencies = [
  "stethoscope-core",
+ "stethoscope-probe-rt",
+]
+
+[[package]]
+name = "stethoscope-system-info"
+version = "0.0.0"
+dependencies = [
+ "stethoscope-core",
+ "stethoscope-probe-rt",
 ]
 
 [[package]]

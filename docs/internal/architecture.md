@@ -555,7 +555,7 @@ deliberately not a target type, trait, or registry.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| v0.1 | Local, read-only inspection | in progress — five tools exist; `storage_health` runs as a probe, the other four are still in-process |
+| v0.1 | Local, read-only inspection | in progress — five tools exist; `storage_health` and `system_info` run as probes, the other three are still in-process |
 | v0.1 infrastructure | Workspace, core crate, embedded payload, probe chain on `local`, `xtask` release | in progress — workspace, `xtask dev`, embedding and the probe chain on `local` built (decisions 40–42); core holds types only; no `xtask release`, manifest, extraction or disassembly check (decisions 33, 35, 38, 39). 34 is reversed and is not part of the plan |
 | v0.2 | Remote targets via user's OpenSSH; `Tag stethoscope-mcp` discovery; capability probes | designed, not started — decisions 28, 29, 31, 32; blocked on interactive SSH auth |
 | v0.3 | Narrowly scoped mutations, after an explicit security design discussion | not started, deliberately |

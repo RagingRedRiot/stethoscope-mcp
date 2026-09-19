@@ -15,7 +15,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::rt::{self, Statfs};
+use crate::statfs::{self, Statfs};
+use stethoscope_probe_rt::sys;
 
 /// `/proc/self/mountinfo` is read into a fixed buffer before anything is
 /// allocated. Decision 28 records that a host with thousands of mounts needs
@@ -97,7 +98,7 @@ fn measure(path: &[u8]) -> Measured {
     let mut c = Vec::with_capacity(path.len() + 1);
     c.extend_from_slice(path);
     c.push(0);
-    match rt::statfs(&c) {
+    match statfs::statfs(&c) {
         Ok(s) if s.f_blocks == 0 => Measured::Pseudo,
         Ok(s) => Measured::Capacity(s),
         Err(e) => Measured::Failed(e),
@@ -136,7 +137,7 @@ pub fn collect(buf: &[u8]) -> Vec<Raw> {
 
 /// Reads mountinfo into `buf` and collects.
 pub fn run(buf: &mut [u8]) -> Mounts {
-    let n = rt::read_file(b"/proc/self/mountinfo\0", buf);
+    let n = sys::read_file(b"/proc/self/mountinfo\0", buf);
     Mounts {
         rows: collect(&buf[..n]),
         truncated: n == buf.len(),

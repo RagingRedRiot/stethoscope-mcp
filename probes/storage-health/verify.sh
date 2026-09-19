@@ -13,8 +13,8 @@ cd "$(dirname "$0")"
 # an explicit host target, from the workspace root.
 TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
 ROOT=$(cd ../.. && pwd)
-(cd "$ROOT" && cargo build --profile probe --target "$TRIPLE" -p stethoscope-storage >/dev/null 2>&1)
-B="$ROOT/target/$TRIPLE/probe/stethoscope-storage"
+(cd "$ROOT" && cargo build --profile probe --target "$TRIPLE" -p stethoscope-storage-health >/dev/null 2>&1)
+B="$ROOT/target/$TRIPLE/probe/stethoscope-storage-health"
 
 echo "probe: $(stat -c%s "$B") bytes"
 echo "files opened: $(strace -e trace=open,openat "$B" 2>&1 >/dev/null | grep -c '= [0-9]')"

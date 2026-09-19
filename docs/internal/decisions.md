@@ -2736,3 +2736,96 @@ Recorded limits:
   for the run (on `/opt` alone), restores it on exit, and **P0** tests the
   world-writable case on purpose. A rehearsal must now start from the runner's
   conditions, not the distribution's defaults.
+
+---
+
+## Session decisions (2026-09-19)
+
+### 44. Probes share one runtime; capabilities are named for their tool; porting is a checklist — accepted, **defers decision 35's guard move to the `system_health` port**
+
+`system_info` is the second probe-backed tool, and porting it settled how every
+later port goes.
+
+**The runtime is a crate, `probes/rt/` (`stethoscope-probe-rt`).** Syscalls,
+`_start`, the panic handler, the `mem*` intrinsics, the bump allocator,
+`privileged()` and `emit()` moved out of the storage probe the moment a second
+probe needed them — `current-state.md` had said copying them would be the
+moment the drift decision 28 exists to prevent became real. A probe is now one
+function returning its report, declared with `probe!(collect)`; `_start` calls a
+fixed symbol the macro defines. The collector takes nothing, which makes
+decision 39's "probes read neither `argv` nor `environ`" structural rather than
+a promise.
+
+**A probe's own syscalls stay in the probe.** `statfs` is in the storage probe,
+`uname` in the system-info probe; the runtime carries only what every probe may
+need. LTO then removes whatever a probe does not call: the system-info probe
+opens no file, so `open`, `read` and `close` are absent from its binary. Each
+probe's syscall set is its capability's, which is what decision 39's
+disassembly check wants to read.
+
+**Capabilities are named for their tool, hyphenated.** `system_info` is
+`system-info`: package `stethoscope-system-info`, directory
+`probes/system-info/`, on-disk name `stethoscope-system-info-<sha256>`. The
+storage probe became `storage-health` to match; the name is not part of the
+hash, and nothing had been released. The prologue now requires a 64-digit hash
+after the prefix when it counts other versions of a probe, so a future
+`container` capability cannot mistake `stethoscope-container-list-…` for one of
+its own.
+
+**The server wraps any probe's report in one generic `Collected<T>`**
+(`src/prologue.rs`): the report flattened, plus `target` and `probe_location`.
+Per-tool server modules disappear; a probe-backed tool's body is one call to
+`prologue::collect("<capability>", target)`. No tool's output schema has a root
+title, so the generic changes nothing the model sees.
+
+**`system_info` reads `uname(2)`, not two files.** One syscall returns the
+hostname, kernel release and machine architecture that the in-process
+collector read from `/proc/sys/kernel/{hostname,osrelease}` and a compile-time
+constant. Nothing to parse and no failure worth naming, so the port forced none
+of open questions 12 or 13.
+
+**Which defers the read guard's move into core.** Decision 35 puts the guard in
+core so probes enforce it. `system_info` now reads no file, so moving the guard
+in this port would have been work with no consumer. It moves with
+`system_health`, the first probe reading several files.
+
+**The port checklist**, each step of which this port exercised:
+
+1. The wire type in core, one module per probe, carrying `privileged`.
+2. A probe crate on `probes/rt`: a `collect()` returning the report, its own
+   syscalls, a three-line `build.rs` for the link flags.
+3. The tool body in `main.rs` becomes `prologue::collect("<capability>", target)`.
+4. The capability in the xtask's `PROBES` and in `scripts/prologue/tools.json`;
+   the coverage gate fails CI if the second is forgotten, which it did during
+   this port before the line was added.
+5. **Parity before deletion**: the new tool's output against the old collector's
+   on the same machine — every old field the same value, only `privileged` and
+   `probe_location` added — then the old collector is deleted, with no fallback
+   (decision 37).
+
+**Measured:** the system-info probe is 6,488 bytes with 60 lines of its own. The
+storage probe on the shared runtime is 11,232 bytes, 168 more than before, with
+identical output and syscall set and a new hash (`5ff57a55…` → `21725d2a…`).
+Both probes pass both prologue tiers, including the runner-condition `/opt`
+cases; `system_info` reports `privileged: true` under real `setcap` and setuid
+grants without a line of tool-specific test.
+
+Recommended order for the rest, from the discussion that chose this port:
+`system_health` (the guard move, the `collected_at` formatter in core, `chrono`
+leaving the server), then `container_list` (a `getdents64` syscall, CI needs a
+running container), then `container_health`, which takes a `container`
+argument that a probe cannot receive — either it reports every container and
+the server selects, or decision 39's constraint is revisited. That choice is
+not made here.
+
+Recorded limits:
+
+* **The runtime is still x86_64-only.** Two probes now depend on it, which
+  raises the cost of the aarch64 half from one probe to a shared crate — the
+  right place for it, and still unbuilt.
+* **The per-probe `build.rs` is duplicated**, three lines each. Link arguments
+  do not propagate from a library to its dependents, so the runtime cannot
+  carry them. Accepted.
+* **`_start`'s call to the probe is resolved at link time.** A probe that
+  forgets `probe!` fails to link rather than to compile — a clear failure, but
+  a later one.

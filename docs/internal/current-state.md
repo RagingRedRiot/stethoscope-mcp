@@ -33,7 +33,7 @@
 > `storage_health` on the new design first, port the existing four after the
 > design has carried real weight.
 >
-> Updated 2026-09-17. **The first probe exists: `probes/storage/`.** It
+> Updated 2026-09-17. **The first probe exists: `probes/storage-health/`.** It
 > collects, it serializes, its output is verified, and the payload is decision
 > 30's shape. It is real code under development — the pilot — and not a
 > fixture, but it is one piece of a chain whose other pieces do not exist: no
@@ -70,6 +70,15 @@
 > found that a third user's mode-700 directory or file was refused as
 > `io_error` instead of `unsafe_owner`; fixed.
 >
+> Updated 2026-09-19. **`system_info` is the second probe-backed tool**, and
+> the port it took is the template for the rest (decision 44): the freestanding
+> runtime moved out of the storage probe into `probes/rt/`, a probe is now one
+> function returning its report, and the server wraps any probe's report in one
+> generic `Collected<T>`. The new probe is 6,488 bytes with 60 lines of its own
+> and makes one syscall of its own (`uname`). Capabilities are named for their
+> tool, so the storage probe is now `probes/storage-health/`. The read guard's
+> move into core is deferred to the `system_health` port.
+>
 > Keep this file honest. If you implement something, update it here.
 
 ## What we are building
@@ -83,20 +92,22 @@ their reasoning are in [`decisions.md`](decisions.md).
 ## Current milestone
 
 **v0.1 — local, read-only.** Five tools exist: `system_info`, `system_health`,
-`container_list`, `container_health` and `storage_health`. The first four
-collect in-process; `storage_health` runs a probe (decision 37). The four are
-pre-redesign and are ported one at a time (architecture.md).
+`container_list`, `container_health` and `storage_health`. `storage_health` and
+`system_info` run probes (decision 37); the other three still collect
+in-process, are pre-redesign, and are ported one at a time (decision 44 has the
+order and the checklist).
 
 ## What actually exists
 
 Everything, in full:
 
 * A cargo workspace (decision 33): the server at the root, `core/`,
-  `probes/storage/` and `xtask/`. Probes are members but not
-  `default-members`, so `cargo build` does not build them.
+  `probes/rt/`, `probes/storage-health/`, `probes/system-info/` and `xtask/`.
+  Everything under `probes/` is a member but not a `default-member`, so
+  `cargo build` does not build it.
 * A Rust binary crate (edition 2024) using `rmcp` 3.2.0.
-* Eleven server source files. The eight below predate the probe work; the
-  three after them are new:
+* Nine server source files. The seven below predate the probe work; the two
+  after them are new:
   * `src/main.rs` (~152 lines) — MCP **stdio** server plus the complete
     model-facing surface. Every tool is declared here and every body does only
     two things: validate the target and delegate. Kept that way on purpose, so
@@ -134,9 +145,6 @@ Everything, in full:
     CPU use and throttling, memory against its limit, OOM kills, process count,
     full PSI, and `uptime_seconds` from the cgroup directory's timestamp
     (decision 27). Limits are reported by presence (decision 26).
-  * `src/system_info.rs` (~38 lines) — the `SystemInfo` shape and its
-    collector: `target`, `hostname`, `kernel_release`, `os`, `arch`, from
-    `/proc/sys/kernel/{hostname,osrelease}` and `std::env::consts`.
   * `src/system_health.rs` (~296 lines, mostly field documentation) — the
     `SystemHealth` shape and its collector: `collected_at` (RFC 3339 UTC, from
     `/proc/stat`'s `btime` plus uptime, so it is the target's own clock —
@@ -159,10 +167,10 @@ Everything, in full:
     arguments, no environment and a ten-second deadline, falling through from
     `/opt` to home on a `noexec` refusal (decision 38). Hashes in-process with
     `sha2` (decision 41). Tells the model a location class and a reason, never
-    a path.
-  * `src/storage_health.rs` (~55 lines) — runs the storage probe through the
-    prologue and parses its output into `stethoscope_core::storage::Report`,
-    adding `target` and `probe_location`. No storage code in the server.
+    a path. `collect::<T>()` runs a probe and parses its report into core's
+    type `T`, returning `Collected<T>`: the report plus `target` and
+    `probe_location`. Every probe-backed tool's body in `main.rs` is one call to
+    it.
 * `build.rs` — reads `$STETHOSCOPE_PAYLOAD_DIR`, copies each probe into
   `OUT_DIR` under its content hash and generates `payload.rs`. The digest is
   computed over the bytes `include_bytes!` embeds.
@@ -174,10 +182,15 @@ Everything, in full:
   workspace root, then scans the outputs and fails if any of those paths
   survived (decision 33's 2026-09-18 amendment). Host architecture only; no
   cross-architecture matrix, manifest or archives.
-* `core/` — `stethoscope-core`, `no_std` + `alloc`, holding the storage wire
-  types and nothing else yet (decision 35). Both the probe and the server link
-  it, so there is one definition of the storage wire format. `unavailable`
-  became an enum on the move, so the schema lists its six values.
+* `core/` — `stethoscope-core`, `no_std` + `alloc`, holding each probe's wire
+  types, one module per probe (`storage`, `system_info`), and nothing else yet
+  (decision 35). Probe and server link the same types, so there is one
+  definition of each wire format.
+* `probes/rt/` — `stethoscope-probe-rt`, the freestanding runtime every probe
+  links (decision 44): syscalls, `_start`, the panic handler and `mem*`
+  intrinsics, the bump allocator, `privileged()`, `emit()`, and the `probe!`
+  macro. A probe's own syscalls stay in the probe, so each binary's syscall set
+  is only what its capability uses.
 * Every tool takes a required `target`; anything other than `"local"` is
   rejected with `invalid_params` (decision 15). `container_health` takes a
   `container` ID alongside it (decision 26).
@@ -221,13 +234,14 @@ Everything, in full:
   passed; the privileged tier's `/opt` cases failed because the runner's `/opt`
   is mode 777 — the prologue correctly refusing, the fixtures wrong. Fixed as
   above; decision 43's limits have the detail.
-* `probes/storage/` — the `storage_health` probe. 11,064 bytes, `no_std` +
-  `alloc` + `serde_json`, raw syscalls, statically linked, built to decision
-  30's payload shape. Opens exactly one file, `/proc/self/mountinfo`. A
-  workspace member: link flags from its own `build.rs`, size settings from
-  `[profile.probe]`; the nested `.cargo/config.toml` and its lockfile are gone.
-  Plus `verify.sh`, fifteen assertions that re-derive every claim its README
-  makes.
+* `probes/storage-health/` — the `storage_health` probe. 11,232 bytes on the
+  shared runtime (11,064 before it), built to decision 30's payload shape.
+  Opens exactly one file, `/proc/self/mountinfo`, and makes one syscall of its
+  own, `statfs`. Plus `verify.sh`, fifteen assertions that re-derive every claim
+  its README makes.
+* `probes/system-info/` — the `system_info` probe. 6,488 bytes; one `uname(2)`
+  call, no file opened. Its syscalls, measured: `uname`, `write`, `mmap`,
+  `exit`, and the three privilege calls.
 * This documentation.
 
 Verified by `scripts/smoke.sh`: the handshake, all five tools advertised,
@@ -276,7 +290,7 @@ Described in `architecture.md`, **none of it exists in code**:
   `chrono` — the two dependencies decision 35 says a core crate cannot have.
   `StethoscopeMcp` is still a unit struct holding no state.
 
-  **`probes/storage/` is the one qualification to "design only," and it is a
+  **`probes/storage-health/` is the one qualification to "design only," and it is a
   narrow one.** The probe exists, builds, runs and emits decision 30's payload.
   Nothing executes it but a shell: the server does not know it exists, nothing
   places it, nothing verifies its hash, and it links no core crate because there
@@ -299,9 +313,9 @@ Described in `architecture.md`, **none of it exists in code**:
   documenting elevated probes; today it is a sentence in decision 32 and no
   code. One binary has now been disassembled by hand, and the result is a
   warning rather than a reassurance — see the finding below.
-* **Decision 37 exists for one tool.** `storage_health` runs a probe placed in
-  `~/.stethoscope`; the other four still collect in-process, and the server
-  still links their collectors and the read guard. That is the arrangement
+* **Decision 37 exists for two tools.** `storage_health` and `system_info` run
+  probes placed in `~/.stethoscope`; the other three still collect in-process,
+  and the server still links their collectors and the read guard. That is the arrangement
   decision 37 replaces. The end state — a server carrying no collection code,
   executing a hash-verified probe from a directory it owns, on `local` as much
   as on a remote host — arrives capability by capability as each tool is ported,
@@ -409,7 +423,7 @@ Unresolved; do not assume an answer has been chosen.
 
    The harness that produced these numbers was deleted 2026-09-17, having
    answered the question; it is at commit `8e4ea2b` if the delta ever needs
-   re-deriving. What replaces it for the ordinary case is better: `probes/storage/`
+   re-deriving. What replaces it for the ordinary case is better: `probes/storage-health/`
    is a real probe whose size can be measured directly, and building it with and
    without the `JsonSchema` derive re-confirmed the zero-cost row on a richer
    payload than the harness ever carried.
@@ -472,7 +486,7 @@ Unresolved; do not assume an answer has been chosen.
     decided, and worth deciding before the first probe emits anything, because
     it is a wire-format change afterwards.
 
-    A probe has now emitted something (`probes/storage/`, 2026-09-17). It
+    A probe has now emitted something (`probes/storage-health/`, 2026-09-17). It
     writes a bare JSON document with no sentinel, because inventing one here
     would have pre-empted this question — so the deadline in the paragraph above
     is intact, but it is no longer hypothetical.
@@ -490,7 +504,7 @@ Unresolved; do not assume an answer has been chosen.
     invented their own. Decision 9 constrains the content — aliases and
     categories, never addresses or diagnostics — and settles nothing else.
 
-    `probes/storage/` needed six names before this was settled and invented
+    `probes/storage-health/` needed six names before this was settled and invented
     them: `permission_denied`, `not_found`, `io_error`, `timed_out`,
     `stale_handle`, `unavailable`. They are a *per-mount* vocabulary, which is a
     category this question did not anticipate — its six failures are all about
@@ -630,7 +644,7 @@ here.
   perfectly healthy — a silent wrong answer rather than a visible failure. The
   measurement harness had this bug and it never showed, because no such mount
   exists on the development host and the harness only had to serialize the same
-  thing twice. It matters in a collector. `probes/storage/` unescapes, and
+  thing twice. It matters in a collector. `probes/storage-health/` unescapes, and
   `verify.sh` exercises it in a user namespace; the same code and the same test
   need to survive the move into core.
 
@@ -767,11 +781,11 @@ from a harness, which is why deleting the harness cost nothing.
   cache's type and logic in its own module so tool bodies still read as
   validate, look up, delegate — the claim that one short file enumerates
   everything this server can do is worth protecting (decision 4).
-* ~~**`probes/storage/` declares response types it does not own, and that is a
+* ~~**`probes/storage-health/` declares response types it does not own, and that is a
   debt with a deadline.**~~ **Discharged 2026-09-18**: the types are in
   `stethoscope-core` and both the probe and the server link them. The original
   agreement is kept below.
-* **`probes/storage/` declares response types it does not own, and that is a
+* **`probes/storage-health/` declares response types it does not own, and that is a
   debt with a deadline.** They belong in `stethoscope-core` (decision 35) and
   are local only because core does not exist. Every day they stay is a day two
   definitions of the storage wire format *could* appear — the drift decision 28
@@ -779,7 +793,7 @@ from a harness, which is why deleting the harness cost nothing.
   lands, the types move and the probe links them. Do not add a second collector
   anywhere in the meantime, and do not copy these types to start a second probe:
   the second probe is the moment the debt becomes real.
-* **`probes/storage/`'s README lists four open questions its code is standing
+* **`probes/storage-health/`'s README lists four open questions its code is standing
   on** — framing (OQ12), the failure vocabulary (OQ13), whether `collected_at`
   travels, and `statfs` versus `statvfs`. Those are the pilot's inputs, not
   precedents, and settling them may change this code. A second probe must not
@@ -791,6 +805,11 @@ from a harness, which is why deleting the harness cost nothing.
   invocation directory, so it stops working the moment the crate joins the
   workspace decision 33 specifies. The flags move to the workspace root then.
   Do not read the current layout as the intended one.
+* **Porting a tool follows decision 44's checklist**: wire types in core, a
+  probe crate on `probes/rt` returning its report, a one-line `main.rs` body
+  through `prologue::collect`, an entry in the xtask's `PROBES` and in
+  `tools.json`, the old collector deleted, and a parity check of the new output
+  against the old before the deletion.
 * **A probe-backed tool is not done until it is in `scripts/prologue/tools.json`**
   (decision 43). It must report `probe_location` and `privileged`; the coverage
   gate fails CI otherwise. Its `arguments` must succeed on a bare runner.

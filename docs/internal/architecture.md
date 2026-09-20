@@ -52,6 +52,45 @@ auditable: you can read `stethoscope-mcp`'s source and enumerate exactly what it
 do. That property is worth more than the convenience of a general escape
 hatch, and it is lost permanently the moment one is added.
 
+## The division of labour, which is the ethos
+
+> **The server and the probes gather the requested data. The model diagnoses,
+> and translates what the raw kernel data means to the operator.**
+
+Everything here reports primitives: block counts and a frame size, a device id,
+pressure-stall figures, a `privileged` flag, a mount that refused to be
+measured and the reason it gave. Nothing computes a verdict, ranks a problem or
+decides what is wrong — decision 18 makes that a rule about payload content,
+and this is the reason behind it.
+
+**Nobody reads kernel primitives to diagnose a machine.** That is what `top`,
+`df` and `free` are for: tools that aggregate, round and label, and in doing so
+throw away most of what the kernel said. The aggregation is usually right, and
+when it is not, the answer is to reach for the next tool, and the one after
+that, until the picture assembles in the operator's head.
+
+**A model can do that translation from the primitives themselves**, which sit
+closer to the ground truth than any summary of them. `f_bavail` against
+`f_bfree` is the difference between "disk full" and "full for everyone but
+root". A `tmpfs` at 100% is RAM, not disk. A read-only image mount reporting no
+free space is not a problem at all. Memory pressure alongside I/O pressure is a
+different diagnosis from either alone. Answering those from `df` and `top`
+takes several tools and someone who knows which to reach for; answering them
+from one structured payload is what this server is for.
+
+Two consequences run through the rest of this document:
+
+* **Fidelity beats convenience in the payload.** Denominators travel with their
+  numerators, refusals are reported rather than dropped, and absent data is
+  absent rather than zero. Something that looks like noise to a human reader is
+  often the distinguishing fact for a diagnosis.
+* **Where the kernel offers nothing, that is the answer.** A kernel without PSI,
+  a host on cgroup v1, a mount that will not be measured — these are reported as
+  facts and not engineered around. Extracting more would mean per-distribution
+  and per-version special cases, which is how an auditable tool becomes a
+  compatibility matrix, and it would cost the small, enumerable probes that make
+  collection safe to run at all.
+
 ## The redesign, and what forced it (2026-09-11 → 09-12)
 
 > Read this before the sections below. Everything from here to the end of

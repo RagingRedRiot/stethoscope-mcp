@@ -42,6 +42,20 @@ The guiding principle is *give the model capabilities, not credentials or
 arbitrary machine access*. There is deliberately no `execute_shell` tool, and
 there never will be.
 
+The second one is about what the tools return: **the server and its probes
+gather data; the model diagnoses and translates what it means to the operator.**
+So the payloads are kernel primitives — block counts with the frame size they
+are counted in, free space *and* the smaller figure an unprivileged process can
+actually write, pressure-stall figures, a mount that refused to be measured and
+the reason it gave. Nothing here computes a verdict or ranks a problem.
+
+Nobody reads primitives to diagnose a machine; that is what `top`, `df` and
+`free` are for, and they aggregate away most of what the kernel said. A model
+can work from the primitives directly, which is how one structured payload can
+answer questions that would otherwise take several tools: whether a full
+filesystem is full for everyone or only for non-root, whether a full `tmpfs` is
+really RAM, whether a read-only image mount at 100% is a problem at all.
+
 Design documentation lives in [`docs/internal/`](docs/internal/) and is written
 as working memory rather than polished docs:
 

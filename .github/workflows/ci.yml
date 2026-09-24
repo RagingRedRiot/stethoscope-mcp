@@ -50,8 +50,8 @@ jobs:
       - run: cargo build --locked
       - run: ./scripts/smoke.sh
 
-  detect-guard-modifications:
-    name: Detect modifications to the read guard
+  detect-control-modifications:
+    name: Detect modifications to read-path controls
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -71,16 +71,27 @@ jobs:
           REPORT="$RUNNER_TEMP/guard-mod-report.md"
           : > "$REPORT"
 
-          # src/guard.rs is the whole read-path security control: the allowlist,
-          # the backstop denylist, and the tests that prove both. Any edit to it
-          # — implementation or test — is security-relevant and must be visible.
+          # The read and execute path's security controls. An edit to any of
+          # them — implementation or test — is security-relevant and must be
+          # visible:
+          #   src/guard.rs             the allowlist, the backstop denylist, and
+          #                            the tests that prove both (decision 25)
+          #   core/src/guard.rs        where the guard lives once it moves into
+          #   probes/rt/src/sys.rs     core and the probes do the reading; these
+          #   src/prologue.rs          arrive with the probe work and are listed
+          #                            now so the notice covers them the day they
+          #                            land rather than the day someone
+          #                            remembers to add them
           # tests/ is included so the check keeps working if that directory is
           # ever added.
-          PROTECTED="src/guard.rs tests/"
+          PROTECTED="src/guard.rs core/src/guard.rs probes/rt/src/sys.rs src/prologue.rs tests/"
 
-          # Modified, Deleted or Renamed against base. Pure additions are
-          # excluded, so adding a new test never raises the notice.
-          MODIFIED_FILES=$(git diff --diff-filter=MDR --name-only "$BASE...HEAD" -- $PROTECTED || true)
+          # ANY change to a protected path, additions included. Excluding pure
+          # additions would let a rename through: git pairs a rename only when
+          # both paths are in the pathspec, so a control file moved to a path
+          # PROTECTED does not list reads as an addition, and could be relocated
+          # and rewritten in silence.
+          MODIFIED_FILES=$(git diff --name-only "$BASE...HEAD" -- $PROTECTED || true)
 
           ANY=false
           while IFS= read -r f; do
@@ -89,13 +100,15 @@ jobs:
             DEL=$(git diff "$BASE...HEAD" -- "$f" | grep -c '^-[^-]' || true)
             if [ "${DEL:-0}" -gt 0 ]; then
               printf -- '- `%s` (%s line(s) removed or changed)\n' "$f" "$DEL" >> "$REPORT"
-              ANY=true
+            else
+              printf -- '- `%s` (added, moved, or additions only)\n' "$f" >> "$REPORT"
             fi
+            ANY=true
           done <<< "$MODIFIED_FILES"
 
           {
             if $ANY; then
-              echo "## :warning: The read guard was modified"
+              echo "## :warning: A read-path control was modified"
               echo ""
               cat "$REPORT"
               echo ""
@@ -136,15 +149,15 @@ jobs:
               const baseRef = process.env.BASE_REF;
               const body = [
                 marker,
-                '## :warning: The read guard was modified',
+                '## :warning: A read-path control was modified',
                 '',
-                `The following protected files have removed or changed lines compared to \`${baseRef}\`:`,
+                `The following control files changed compared to \`${baseRef}\`:`,
                 '',
                 report.trimEnd(),
                 '',
-                '`src/guard.rs` is the only thing deciding which paths this server may open — the allowlist, the backstop denylist, and the tests that prove both. Adding a new test does not trigger this notice; editing or removing existing guard code or guard tests does.',
+                'These decide what may be read and what may run: the read guard is the allowlist, the backstop denylist and the tests that prove both; once the probe work lands, `probes/rt/src/sys.rs` is the only place a probe opens a file and `src/prologue.rs` decides which binary the server will execute. Any change to them raises this notice, additions included — a control file moved to a new path reads as an addition, which is exactly how one could be relocated and rewritten unnoticed.',
                 '',
-                'That can be entirely legitimate, such as admitting a new cgroup file for a new tool. It should be deliberate, and a reviewer should see it.',
+                'That can be entirely legitimate, such as admitting a new file for a new tool. It should be deliberate, and a reviewer should see it.',
               ].join('\n');
 
               if (existing) {

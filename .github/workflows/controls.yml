@@ -1,0 +1,102 @@
+name: Controls
+
+# A check a pull request cannot rewrite.
+#
+# Every other job in this repository is defined by the files *in the pull
+# request*, so a PR can edit them — including making a required check trivially
+# pass, or deleting the tests that enforce the read guard. Required status
+# checks match by name, not by content, so that is enough to go green.
+#
+# This workflow runs on `pull_request_target`, which uses the **base branch's**
+# copy of the file. A PR cannot change what runs here without first merging a
+# change to main, which this same check gates.
+#
+# It therefore fails any PR that touches a control file, unless the event that
+# triggered this run *is* someone with write access applying the
+# `reviewed-controls` label. A label already sitting on the PR does not count:
+# otherwise a reviewed diff could be swapped for an unreviewed one by pushing
+# again, and the check would stay green. Any later push, or any other label
+# change, fails it again and the reviewer must remove and re-apply the label
+# after reading the new diff.
+#
+# (That refinement comes from the relay project, which implemented this pattern
+# from ours and found the sticky-label hole in it.)
+#
+# SAFETY: `pull_request_target` runs with the base repository's token, so this
+# job must never check out or execute the PR's code. It does neither: it asks
+# the API which files changed and compares names. Keep it that way.
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  control-files:
+    name: control files reviewed
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail if a control file changed without the reviewed-controls label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT: ${{ github.event.action }}
+          LABEL_APPLIED: ${{ github.event.label.name }}
+        run: |
+          set -euo pipefail
+
+          # What decides which paths may be read, and which binary may run.
+          # .github/ is here too: without it, a PR could disable this job for
+          # every PR that came after it.
+          is_control() {
+            case "$1" in
+              .github/*) return 0 ;;
+              core/src/guard.rs) return 0 ;;
+              probes/rt/src/sys.rs) return 0 ;;
+              src/prologue.rs) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          touched=()
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if is_control "$file"; then touched+=("$file"); fi
+          done < <(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+
+          if [ ${#touched[@]} -eq 0 ]; then
+            echo "No control file touched."
+            exit 0
+          fi
+
+          echo "This pull request changes control files:"
+          printf '  %s\n' "${touched[@]}"
+
+          # Only the act of applying the label passes this check — not the
+          # label's presence. A run triggered by a push therefore fails even if
+          # the label is still attached, so the green result always belongs to
+          # the commit the reviewer had in front of them.
+          if [ "$EVENT" = labeled ] && [ "$LABEL_APPLIED" = reviewed-controls ]; then
+            echo
+            echo "reviewed-controls applied to this revision — allowed."
+            exit 0
+          fi
+
+          cat <<'EOF'
+
+          These files decide what this server may read and what it may execute:
+          the read guard and its tests, the one place a probe opens a file, the
+          prologue that verifies a payload before running it, and the workflows
+          that check all of the above (decision 25).
+
+          Read the diff. If the change is intended, apply the `reviewed-controls`
+          label — and if it is already applied, remove it and apply it again,
+          because only applying it counts and it must be applied to this
+          revision.
+          EOF
+          exit 1

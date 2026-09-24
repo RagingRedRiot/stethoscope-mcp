@@ -162,7 +162,7 @@ Two things verified against the 3.2.0 source, both easy to get wrong:
   stateless unit struct; the usual `tool_router` field + constructor is dead
   weight unless you opt in with `#[tool_handler(router = self.tool_router)]`.
 
-### 14. Minimal dependency set — accepted, **updated by decisions 33, 35 and 41**
+### 14. Minimal dependency set — accepted, **updated by decisions 33, 35, 41 and 45**
 
 `rmcp` (no default features), `tokio` (no default features), `serde`. That is
 all. Notably absent and deliberately so:
@@ -181,6 +181,11 @@ all. Notably absent and deliberately so:
 > digest the embedded payload at build time (decision 33); it is not linked into
 > the shipped binary. And `chrono` **leaves** once `system_health` moves to the
 > core crate, because a `no_std` core formats RFC 3339 itself (decision 35).
+
+> **`chrono` left, as predicted, on 2026-09-19** (decision 45). `system_health`
+> was its last user; core now formats RFC 3339 in about forty lines, as that
+> amendment estimated. The server's list is `rmcp`, `tokio`, `serde`,
+> `serde_json`, `sha2`, `libc` and `stethoscope-core`.
 
 > **Updated 2026-09-18 by decisions 41 and 42.** `sha2` is now linked into the
 > shipped binary as well as used at build time — the local machine's probe is
@@ -691,7 +696,7 @@ Recorded limits:
 universal tool to the fragile one and pays the cost on every call, for
 information that is only wanted about the exceptions.
 
-### 25. The read guard is an allowlist at the single read chokepoint — accepted, **remit clarified by decision 36**
+### 25. The read guard is an allowlist at the single read chokepoint — accepted, **remit clarified by decision 36; chokepoint moved and the control widened 2026-09-23**
 
 `src/guard.rs` decides which paths this server may open. `proc::read` and
 `proc::read_optional` ask it first, and nothing else in the crate opens a file.
@@ -753,6 +758,35 @@ the allowlist was flagged.
 to the allowlist leaves it denied at runtime by the backstop, *and* fails the
 guard's own tests because they detect the contradiction, *and* raises the CI
 notice on the diff. Three independent layers have to be defeated together.
+
+> **The chokepoint moved 2026-09-23, and the control was widened to match**
+> (decisions 35 and 45). The guard is in `stethoscope-core`; the code that reads
+> is in the probes. Three changes keep this decision's claim true now that the
+> reading happens in a different binary from the one a reviewer of the server
+> reads:
+>
+> * **`read_file` in `probes/rt` is the chokepoint**, and it asks `guard::check`
+>   before `open`. The server's `proc::read` still asks it for the tools not yet
+>   ported, so there is one allowlist with one set of tests on both sides.
+> * **The open-family syscall numbers are crate-private to the runtime.** A
+>   probe reaches the kernel through the runtime's wrappers or through a syscall
+>   number it declares for its own capability — `statfs`, `uname`. Opening a
+>   file from outside the runtime takes redeclaring `open` by number, and
+>   **a new test fails the build when any crate under `probes/` does**, or names
+>   any other syscall that hands back a descriptor: `openat`, `memfd_create`,
+>   `name_to_handle_at`, `execve`, `socket`. Verified by planting one.
+> * **CI's notice covers every file that decides what may be read or run**, not
+>   only the guard: `core/src/guard.rs`, `probes/rt/src/sys.rs` and
+>   `src/prologue.rs`. Without the second, the `guard::check` call could be
+>   deleted with no notice raised — the control would still exist and simply
+>   stop being asked. The job is `detect-control-modifications`.
+>
+> The layer table above gains a row, and it is the strongest one: **a link-time
+> boundary**. A probe links one capability, so the storage probe contains no
+> cgroup-reading code at all and the system-info probe opens no file whatever
+> the allowlist says. The runtime allowlist is now the union of every probe's
+> paths and therefore broader than any single probe needs; the narrowing comes
+> from what each binary links (decision 28).
 
 Recorded limits:
 
@@ -1894,7 +1928,7 @@ Recorded limits:
   `current-state.md`. That path is operator-driven and is not how any tool
   collects.
 
-### 35. The core crate depends on neither `rmcp` nor `chrono`, and the read guard moves into it — accepted, **amended by decision 37**
+### 35. The core crate depends on neither `rmcp` nor `chrono`, and the read guard moves into it — accepted, **amended by decision 37; carried out by decision 45**
 
 `stethoscope-core` is `no_std` + `alloc`: collection, the response types, their
 `Serialize`/`JsonSchema` derives, and `src/guard.rs`. It links into the server
@@ -1966,6 +2000,18 @@ Recorded limits:
   capabilities. Core itself must therefore not assume it can free and reuse.
 * **`schemars` derives stay unconditional**, per decision 28's measurement that
   they cost a probe zero after LTO. No feature gate.
+
+> **Carried out 2026-09-19 by decision 45**, with one estimate corrected. "A
+> probe keeps the runtime guard even though its allowlist is mostly dead code:
+> it costs bytes in the hundreds" is **wrong by an order of magnitude**. Linking
+> the guard took the storage probe from 11,232 to 14,576 bytes — **+3,344** —
+> with its output unchanged. The cost is `Vec` and string comparison in path
+> splitting, and an iterator-based rewrite would recover most of it. The
+> decision to keep the guard in the probes stands: a control present in one
+> build and absent in another is the asymmetry this decision refused, and 3 KB
+> is still cheap against what it buys. But the figure should be quoted as
+> measured, not as estimated.
+
 
 ### 36. `statvfs` is outside the read guard's remit — accepted
 
@@ -2829,3 +2875,168 @@ Recorded limits:
 * **`_start`'s call to the probe is resolved at link time.** A probe that
   forgets `probe!` fails to link rather than to compile — a clear failure, but
   a later one.
+
+### 45. The guard, the parsers and RFC 3339 are in core; `system_health` is a probe — accepted, **carries out decision 35**
+
+`system_health` is the third probe-backed tool, and the port did what decision
+35 said the pilot's real work would be.
+
+**What moved into core**, all of it `no_std` + `alloc`:
+
+* **The read guard**, with its tests, and with `/proc/self/mountinfo` added to
+  `EXACT` — the storage probe's whole read set, which had been unguarded because
+  the guard was in the server (decision 36 always said that entry was the one it
+  needed).
+* **The parsers** for the kernel formats: `count_cpus`, `stat_btime`,
+  `meminfo_bytes`, `psi_avg`, `psi_total`. They take `&str` and return `Option`;
+  a probe turns `None` into an exit code, the server into an `ErrorData`, and
+  neither concern is in core. The server re-exports what its unported tools
+  still use, so `container_health`'s call sites did not change.
+* **RFC 3339 formatting**, as Howard Hinnant's `civil_from_days`. The timestamp
+  must be the target's own clock (decision 19), so a probe has to format it.
+  **`chrono` leaves the server** (decision 14).
+
+**Every file a probe opens now goes through the guard.** `read_file` in
+`probes/rt` asks `guard::check` before it opens anything, so the allowlist is
+structural rather than a promise — and it is the same allowlist, with the same
+tests, that the server still applies to its unported tools. Decision 28's
+link-time boundary and decision 25's runtime allowlist now both apply to the
+binary that does the reading.
+
+**The source-scan test scans the workspace**, not one crate, as decision 35
+required: a forbidden path named in any crate outside `guard.rs` fails it. CI's
+notice follows the file to `core/src/guard.rs`, and the job — renamed
+`detect-control-modifications` — now also covers `probes/rt/src/sys.rs`, where
+the guard is called, and `src/prologue.rs`, which decides what runs. See
+decision 25's 2026-09-23 amendment.
+
+Measured:
+
+| | bytes |
+|---|---|
+| `system-info` | 6,488 |
+| `storage-health` before the guard | 11,232 |
+| `storage-health` with the guard | 14,576 |
+| `system-health` | 44,616 |
+| the same capability on static `std` (decision 28) | ~291,784 |
+
+Two of those need saying plainly. **The guard costs 3,344 bytes, not the
+hundreds decision 35 estimated** — amended there. **`system-health` is three
+times the storage probe** because it is the first probe to parse and format
+floating point: `dec2flt` and `ryu` are most of the difference, and they are
+paid once per probe that needs them.
+
+**`no_std` has no `f64::round` or `f64::powi`** — both are libm. The probe
+carries a `round_half_away` documented as matching `f64::round`, exact through
+`i64` for the range it rounds. A later probe wanting real floating-point maths
+would need libm or a decision to avoid it.
+
+**Verified by parity before the old collector was deleted** (decision 44's
+checklist): against the in-process tool on the same machine, no field removed,
+only `privileged` and `probe_location` added, every shared field the same type,
+`cpu.count`, `memory.total_bytes` and `swap_total_bytes` identical — and
+`collected_at` agreeing with `chrono`'s to the same second, which is the
+strongest evidence the new formatter is right. Core's own tests walk every day
+from 1970 to 2069 against a calendar.
+
+Recorded limits:
+
+* **The guard's cost is avoidable and was not avoided.** `components` allocates
+  a `Vec` and compares strings. An iterator-based rewrite would shrink every
+  probe; it is a change to the most security-sensitive file in the project, so
+  it wants its own review rather than riding along with a port.
+* **PSI absence is still untested.** The probe omits `pressure` when no file
+  parses, exactly as the server did, and no kernel without PSI has run it.
+* **`/proc/stat` is read into a 256 KiB buffer** and silently truncated past
+  that, where `storage_health` reports `truncated`. About 90 bytes per CPU, so
+  the limit is thousands of CPUs, but the asymmetry is real.
+* **The container tools still collect in-process**, so the server still links
+  `proc.rs`, `cgroup.rs` and the guard. Decision 37's "the server carries no
+  collection code" arrives when they are ported.
+
+### 46. A control check must be defined outside the pull request it checks — accepted, **extends decisions 25 and 43**
+
+Every other job in this repository is defined by the files *in the pull
+request*. A PR can therefore rewrite them, and **a required status check is
+matched by name, not by content**: a PR that replaces the job named `cargo test`
+with `run: echo ok` reports success under that context and satisfies branch
+protection. The same trick disables the read guard's tests, the source scans,
+and the notice that flags edits to control files. Everything decisions 25 and 43
+rely on is editable by the change being checked.
+
+**So one check runs from the base branch.** `.github/workflows/controls.yml`
+triggers on `pull_request_target`, which uses `main`'s copy of the file rather
+than the PR's. It fails any PR that touches a control file —
+`.github/**`, `core/src/guard.rs`, `probes/rt/src/sys.rs`, `src/prologue.rs` —
+unless a `reviewed-controls` label is present. Changing what that job does
+requires merging a change to `main`, which this same check gates.
+
+**The label is the deliberate act, not the approval.** Applying it takes write
+access and is recorded on the PR. It does not assert the change is safe; it
+asserts a human read the diff, which is the only control that was ever really
+doing the work.
+
+> **Amended 2026-09-23, before this ever ran: only the labelling event counts.**
+> As first written, the job passed whenever the label was *present*. That is
+> sticky: a reviewer labels commit A, the author pushes commit B, the job re-runs
+> on `synchronize`, finds the label still attached and goes green on a diff
+> nobody read. The check now passes only when the triggering event is
+> `labeled` with `reviewed-controls`; a push, a removal, or any other label
+> change fails it again, and the reviewer must remove and re-apply the label
+> after reading the new diff. The green result then always belongs to the commit
+> the reviewer had in front of them.
+>
+> This is the same staleness GitHub's own `dismiss_stale_reviews` exists to
+> handle — which this repository has set to `true` and gets nothing from, because
+> required approving reviews are zero.
+>
+> **Found by the relay project**, which implemented this pattern from ours and
+> caught the hole while doing it. Worth recording as a pattern in itself: a
+> design copied into a second project gets read by someone who was not there
+> when it was written, which is a review this log cannot buy any other way.
+>
+> Friction accepted: the cumulative diff is what is examined, so a later push
+> that does not touch a control file still fails until the label is re-applied.
+> Comparing the control files' contents between the labelled commit and the head
+> would be exact and needs state this job deliberately does not keep.
+
+**It must never run the PR's code.** `pull_request_target` carries the base
+repository's token, which is why it is the trigger most often misused. This job
+does not check out the head, does not build, and does not run anything from the
+PR: it asks the API which files changed and compares names. Any future step that
+needs the PR's content belongs in a different workflow.
+
+**`.github/**` is inside the protected set** rather than only the three source
+files. Without it, one PR could disable the job for every PR after it.
+
+**A stable name for the matrix.** `prologue.yml` gains a `prologue complete` job
+that needs the whole matrix and fails on any result other than success,
+including skipped and cancelled. Required checks are named, and the matrix's own
+names change as tools are added to `tools.json`; this one does not.
+
+Branch protection on `main` now requires `cargo fmt --check`, `cargo clippy`,
+`cargo test`, `scripts/smoke.sh` and `prologue complete`, with strict
+up-to-date branches, admins included, force-pushes and deletions refused.
+`control files reviewed` joins that list once this workflow is on `main` — a
+required check that cannot yet run would block every PR, including the one that
+introduces it.
+
+Recorded limits:
+
+* **This stops a pull request from quietly disabling a control. It does not
+  stop an administrator from turning protection off.** On a repository with one
+  maintainer the last control is a human reading a diff; what this buys is that
+  "I did not notice the workflow change" stops being possible.
+* **Required approving reviews stay at zero, for now.** GitHub forbids
+  approving your own pull request, so requiring one review with admin
+  enforcement on means a solo maintainer cannot merge at all. The alternatives
+  are to exempt admins — which reopens every bypass — or to accept that review
+  is a habit rather than a gate until there is a second maintainer. Unresolved
+  deliberately; revisit when someone else contributes.
+* **A fork PR can still show a green check it faked.** It cannot merge itself,
+  and it gets no secrets and a read-only token, so the consequence is a
+  misleading badge rather than a compromise. The label requirement is what makes
+  a control change visible before a merge.
+* **Nothing here verifies the artifact.** These are all source-level controls
+  and assume the binary was built from the reviewed source; decision 39's
+  disassembly check is still the missing half.

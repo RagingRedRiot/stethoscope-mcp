@@ -15,15 +15,22 @@
 use core::arch::{asm, naked_asm};
 use core::ffi::c_void;
 
-pub const SYS_READ: usize = 0;
-pub const SYS_WRITE: usize = 1;
-pub const SYS_OPEN: usize = 2;
-pub const SYS_CLOSE: usize = 3;
-pub const SYS_MMAP: usize = 9;
-pub const SYS_EXIT: usize = 60;
-pub const SYS_GETUID: usize = 102;
-pub const SYS_GETEUID: usize = 107;
-pub const SYS_CAPGET: usize = 125;
+// Crate-private, deliberately. A probe reaches the kernel through the wrappers
+// below — above all [`read_file`], which asks the read guard first — or through
+// a syscall number it declares itself for its own capability, the way the
+// storage probe declares `statfs` and the system-info probe `uname`. Opening a
+// file from outside this module therefore takes redeclaring `open` by number:
+// a visible, deliberate act that `stethoscope-core`'s own tests fail the build
+// over (decision 25).
+pub(crate) const SYS_READ: usize = 0;
+pub(crate) const SYS_WRITE: usize = 1;
+pub(crate) const SYS_OPEN: usize = 2;
+pub(crate) const SYS_CLOSE: usize = 3;
+pub(crate) const SYS_MMAP: usize = 9;
+pub(crate) const SYS_EXIT: usize = 60;
+pub(crate) const SYS_GETUID: usize = 102;
+pub(crate) const SYS_GETEUID: usize = 107;
+pub(crate) const SYS_CAPGET: usize = 125;
 
 /// # Safety
 ///
@@ -96,9 +103,27 @@ pub fn write_all(fd: usize, mut buf: &[u8]) {
 }
 
 /// Reads a whole file into `buf`, truncating past its length. Returns the
-/// number of bytes read.
-pub fn read_file(path: &[u8], buf: &mut [u8]) -> usize {
-    let fd = unsafe { syscall3(SYS_OPEN, path.as_ptr() as usize, 0, 0) };
+/// number of bytes read, or 0 if the file could not be read at all.
+///
+/// **Every file a probe opens goes through this function, and it asks the read
+/// guard first** (decision 35). The guard is the same allowlist, with the same
+/// tests, that the server applies to the tools it has not ported yet; a path
+/// outside it reads as empty, which fails the parse rather than returning data.
+/// A denial is always a bug — no path here is model-controlled — and
+/// `stethoscope-core`'s own tests are what catch it.
+pub fn read_file(path: &str, buf: &mut [u8]) -> usize {
+    if stethoscope_core::guard::check(path).is_err() {
+        return 0;
+    }
+    // open(2) needs a NUL-terminated path, and there is no allocator contract
+    // worth taking for a string this short.
+    let mut c_path = [0u8; 256];
+    if path.len() >= c_path.len() {
+        return 0;
+    }
+    c_path[..path.len()].copy_from_slice(path.as_bytes());
+
+    let fd = unsafe { syscall3(SYS_OPEN, c_path.as_ptr() as usize, 0, 0) };
     if fd < 0 {
         return 0;
     }

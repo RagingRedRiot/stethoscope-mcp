@@ -137,7 +137,7 @@ pub fn collect(buf: &[u8]) -> Vec<Raw> {
 
 /// Reads mountinfo into `buf` and collects.
 pub fn run(buf: &mut [u8]) -> Mounts {
-    let n = sys::read_file(b"/proc/self/mountinfo\0", buf);
+    let n = sys::read_file("/proc/self/mountinfo", buf);
     Mounts {
         rows: collect(&buf[..n]),
         truncated: n == buf.len(),

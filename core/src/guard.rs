@@ -1,15 +1,17 @@
-//! The read guard: the one place that decides which paths this server may read
-//! the *contents* of as collected data.
+//! The read guard: the one place that decides which paths may be read as
+//! collected data.
 //!
-//! Every such read in the crate goes through [`crate::proc::read`] or
-//! [`crate::proc::read_optional`], and both ask this module first. Two things
-//! touch the filesystem outside its remit, on purpose, and neither puts file
-//! contents in front of the model: `statvfs`, which the storage probe calls and
-//! which returns fixed-shape capacity figures about a path (decision 36), and
-//! the probe prologue
-//! (`crate::prologue`), which hashes, places and executes probe binaries in
-//! `/opt/stethoscope` and `~/.stethoscope` under rules of its own (decisions 32,
-//! 38 and 40).
+//! It lives in core because the reading moved to the probes (decision 35): a
+//! probe asks this module before it opens anything, through
+//! `stethoscope_probe_rt::sys::read_file`, and the server asks it for the tools
+//! it has not ported yet. One allowlist, one set of tests, both sides.
+//!
+//! Two things touch the filesystem outside its remit, on purpose, and neither
+//! puts file contents in front of the model: `statfs`, which the storage probe
+//! calls and which returns fixed-shape capacity figures about a path (decision
+//! 36), and the server's probe prologue, which hashes, places and executes
+//! probe binaries in `/opt/stethoscope` and `~/.stethoscope` under rules of its
+//! own (decisions 32, 38 and 40).
 //!
 //! The control is an **allowlist**, not a denylist. A denylist has to enumerate
 //! every dangerous file forever, and it loses outright to renaming: a symlink at
@@ -30,8 +32,12 @@
 //! so the tests at the bottom of this file, and the CI job that flags any edit
 //! to it, are as much of the control as the runtime check is.
 
+use alloc::vec::Vec;
+
 /// Files this server reads at a fixed, known path.
 const EXACT: &[&str] = &[
+    // Read by the storage probe, and its entire read set (decision 36).
+    "/proc/self/mountinfo",
     "/proc/uptime",
     "/proc/stat",
     "/proc/loadavg",
@@ -106,8 +112,8 @@ pub enum Denied {
     NotAllowed,
 }
 
-impl std::fmt::Display for Denied {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Denied {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let s = match self {
             Denied::NotAbsolute => "not an absolute path",
             Denied::BadComponent => "contains an empty, '.' or '..' component",
@@ -186,8 +192,32 @@ pub fn check(path: &str) -> Result<(), Denied> {
 }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+
+    /// Every `.rs` file under `dir`, skipping build output and this file.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_none_or(|n| n != "guard.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
 
     fn allowed(path: &str) {
         assert_eq!(check(path), Ok(()), "should be ALLOWED: {path}");
@@ -315,16 +345,79 @@ mod tests {
     /// read of `/proc/<pid>/environ` in a new tool. Comment lines are skipped so
     /// that prose may still discuss the rule.
     #[test]
-    fn no_other_module_names_a_forbidden_path() {
+    fn only_the_probe_runtime_can_open_a_file() {
+        // The guard is only a control if everything that opens a file asks it
+        // first. In the server that is `proc::read`; in a probe it is
+        // `stethoscope_probe_rt::sys::read_file`, which calls `check` before
+        // `open`. A probe that opened a file itself would read whatever it
+        // liked, so the open-family syscall numbers are crate-private to the
+        // runtime, and naming one — or any other syscall that hands back a
+        // descriptor — anywhere under probes/ outside it is what a bypass looks
+        // like. This fails the build over it (decision 25).
+        const BYPASS: &[&str] = &[
+            "SYS_OPEN", // open(2), openat(2), openat2(2)
+            "SYS_CREAT",
+            "SYS_MEMFD",          // memfd_create(2): a file with no path to guard
+            "SYS_NAME_TO_HANDLE", // name_to_handle_at(2), open_by_handle_at(2)
+            "SYS_EXECVE",         // a probe execs nothing (decision 39)
+            "SYS_SOCKET",         // and opens no socket: stdout is its only output
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("core/ has a parent");
+        let runtime = root.join("probes/rt/src");
+        let mut files = Vec::new();
+        sources(&root.join("probes"), &mut files);
+        assert!(!files.is_empty(), "expected to scan the probe crates");
+
         let mut hits = Vec::new();
-        for entry in std::fs::read_dir("src").expect("src/ is readable") {
-            let path = entry.expect("readable dir entry").path();
-            if path.extension().is_none_or(|e| e != "rs") {
+        for path in files {
+            if path.starts_with(&runtime) {
                 continue;
             }
-            if path.file_name().is_some_and(|n| n == "guard.rs") {
-                continue;
+            let text = std::fs::read_to_string(&path).expect("source file is readable");
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for name in BYPASS {
+                    if line.contains(name) {
+                        hits.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
+                }
             }
+        }
+        assert!(
+            hits.is_empty(),
+            "a probe opens a file without the guard:\n{}",
+            hits.join("\n")
+        );
+    }
+
+    #[test]
+    fn no_other_module_names_a_forbidden_path() {
+        // Scans every crate in the workspace, not just this one: the guard is
+        // in core now, and the code that reads files is in the probes
+        // (decision 35). A forbidden path named anywhere outside this file is
+        // either a read that bypassed the allowlist or a new one worth
+        // reviewing.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("core/ has a parent");
+        let mut files = Vec::new();
+        sources(&root.join("src"), &mut files);
+        sources(&root.join("core/src"), &mut files);
+        sources(&root.join("probes"), &mut files);
+        sources(&root.join("xtask/src"), &mut files);
+        assert!(
+            files.len() > 5,
+            "expected to scan the workspace, found {} files",
+            files.len()
+        );
+
+        let mut hits = Vec::new();
+        for path in files {
             let text = std::fs::read_to_string(&path).expect("source file is readable");
             for (n, line) in text.lines().enumerate() {
                 if line.trim_start().starts_with("//") {

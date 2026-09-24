@@ -85,3 +85,20 @@ jobs:
       # sudo builds fixtures only; the server runs as the runner user.
       - name: Privileged tier
         run: ./scripts/prologue/privileged.sh --tool "${{ matrix.tool }}" --require-all
+
+  # One stable name for the whole matrix, so branch protection can require it:
+  # a required check is matched by name, and the matrix's own names change as
+  # tools are added to tools.json. `if: always()` is what makes a skipped or
+  # cancelled leg a failure here rather than a silent pass.
+  complete:
+    name: prologue complete
+    needs: [build, plan, prologue]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every prologue job succeeded
+        run: |
+          echo "build=${{ needs.build.result }} plan=${{ needs.plan.result }} prologue=${{ needs.prologue.result }}"
+          test "${{ needs.build.result }}" = success \
+            && test "${{ needs.plan.result }}" = success \
+            && test "${{ needs.prologue.result }}" = success

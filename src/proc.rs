@@ -15,7 +15,10 @@
 
 use rmcp::ErrorData;
 
-use crate::guard;
+use stethoscope_core::guard;
+// The parsers live in core, where the probes use them too (decision 35).
+// Re-exported so this module stays the one place the server's tools look.
+pub use stethoscope_core::proc::{psi_avg, psi_total, stat_btime};
 
 /// Read a kernel virtual file whole, trimmed.
 ///
@@ -103,26 +106,9 @@ pub async fn read_dir(path: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// The target's own wall clock, as RFC 3339 in UTC.
-///
-/// Boot time plus uptime. Formatted without a fractional part because `btime`
-/// is only recorded to the second, and implying more precision than the source
-/// has would be its own small lie.
-pub fn wall_clock(btime: u64, uptime_seconds: f64) -> Option<String> {
-    let epoch_seconds = i64::try_from(btime)
-        .ok()?
-        .checked_add(uptime_seconds as i64)?;
-    Some(
-        chrono::DateTime::from_timestamp(epoch_seconds, 0)?
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    )
-}
-
 /// Format an epoch second as RFC 3339 in UTC, for a caller that already has one.
 pub fn wall_clock_from(epoch_seconds: i64) -> String {
-    chrono::DateTime::from_timestamp(epoch_seconds, 0)
-        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_default()
+    stethoscope_core::time::rfc3339(epoch_seconds).unwrap_or_default()
 }
 
 /// Read the target's clock for a tool that has no other reason to touch
@@ -133,8 +119,7 @@ pub fn wall_clock_from(epoch_seconds: i64) -> String {
 /// two reads are done here rather than repeated at every call site.
 pub async fn collected_at() -> Result<String, ErrorData> {
     let epoch = target_now().await?;
-    chrono::DateTime::from_timestamp(epoch, 0)
-        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    stethoscope_core::time::rfc3339(epoch)
         .ok_or_else(|| parse_error("/proc/stat", "boot time out of range"))
 }
 
@@ -206,60 +191,4 @@ pub fn field<T: std::str::FromStr>(
     value
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| parse_error(path, what))
-}
-
-/// Count the per-CPU lines in `/proc/stat` — `cpu0`, `cpu1`, … — skipping the
-/// leading `cpu` aggregate line.
-pub fn count_cpus(stat: &str) -> u32 {
-    stat.lines()
-        .filter(|line| {
-            line.strip_prefix("cpu")
-                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
-        })
-        .count() as u32
-}
-
-/// Boot time from `/proc/stat`, as seconds since the Unix epoch.
-///
-/// Adding `/proc/uptime` to this gives the target's own idea of the current
-/// wall-clock time, from files already being read — no second mechanism, and
-/// nothing that stops working when the read is happening over SSH.
-pub fn stat_btime(stat: &str) -> Option<u64> {
-    let value = stat.lines().find_map(|line| line.strip_prefix("btime "))?;
-    value.split_whitespace().next()?.parse().ok()
-}
-
-/// Pull one `/proc/meminfo` field, converting to bytes.
-///
-/// The file labels its values `kB` but reports KiB. Correcting that here,
-/// once, in trusted code is the whole of decision 18's first rule: the
-/// alternative is every consumer downstream re-learning the same footgun.
-pub fn meminfo_bytes(meminfo: &str, key: &str) -> Option<u64> {
-    let value = meminfo
-        .lines()
-        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))?;
-    let kib: u64 = value.split_whitespace().next()?.parse().ok()?;
-    kib.checked_mul(1024)
-}
-
-/// A pressure-stall file is two lines, `some` and `full`, each of the form
-/// `some avg10=0.00 avg60=0.00 avg300=0.00 total=1714525`.
-///
-/// `line` selects which of the two ("some " or "full "), `key` which token
-/// ("avg10=", "total=").
-fn psi_token<'a>(text: &'a str, line: &str, key: &str) -> Option<&'a str> {
-    text.lines()
-        .find(|l| l.starts_with(line))?
-        .split_whitespace()
-        .find_map(|token| token.strip_prefix(key))
-}
-
-/// One pressure average, as a percentage of wall-clock time.
-pub fn psi_avg(text: &str, line: &str, key: &str) -> Option<f64> {
-    psi_token(text, line, key)?.parse().ok()
-}
-
-/// Cumulative stall microseconds since boot for one of the two lines.
-pub fn psi_total(text: &str, line: &str) -> Option<u64> {
-    psi_token(text, line, "total=")?.parse().ok()
 }

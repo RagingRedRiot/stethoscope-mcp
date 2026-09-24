@@ -21,6 +21,7 @@ use std::{env, fs};
 /// asks for and what goes into the filename `stethoscope-<capability>-<hash>`.
 const PROBES: &[(&str, &str)] = &[
     ("storage-health", "stethoscope-storage-health"),
+    ("system-health", "stethoscope-system-health"),
     ("system-info", "stethoscope-system-info"),
 ];
 

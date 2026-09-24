@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 libc = "0.2.189"
 rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,7 +17,7 @@ tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-th
 sha2 = "0.11.0"
 
 [workspace]
-members = [".", "core", "probes/rt", "probes/storage-health", "probes/system-info", "xtask"]
+members = [".", "core", "probes/rt", "probes/storage-health", "probes/system-health", "probes/system-info", "xtask"]
 # Probes and their runtime are excluded: they build only under [profile.probe]
 # and are built by `cargo xtask dev`, never by a plain `cargo build` (decision 33).
 default-members = [".", "core", "xtask"]

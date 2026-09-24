@@ -608,7 +608,6 @@ dependencies = [
 name = "stethoscope-mcp"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "libc",
  "rmcp",
  "serde",
@@ -624,10 +623,19 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "stethoscope-core",
 ]
 
 [[package]]
 name = "stethoscope-storage-health"
+version = "0.0.0"
+dependencies = [
+ "stethoscope-core",
+ "stethoscope-probe-rt",
+]
+
+[[package]]
+name = "stethoscope-system-health"
 version = "0.0.0"
 dependencies = [
  "stethoscope-core",

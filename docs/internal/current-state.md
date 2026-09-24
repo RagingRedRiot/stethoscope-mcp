@@ -79,6 +79,15 @@
 > tool, so the storage probe is now `probes/storage-health/`. The read guard's
 > move into core is deferred to the `system_health` port.
 >
+> Updated 2026-09-23. **`system_health` is the third probe-backed tool**, and
+> its port carried out decision 35 (decision 45): the read guard, the `/proc`
+> parsers and RFC 3339 formatting are in core, **`chrono` is gone from the
+> server**, and every file a probe opens goes through the guard inside
+> `probes/rt`'s `read_file`. Two measurements corrected an estimate: the guard
+> costs a probe 3,344 bytes rather than "hundreds", and `system-health` is
+> 44,616 bytes — three times `storage-health` — because it is the first probe to
+> parse and format floats. Only the two container tools are left in-process.
+>
 > Keep this file honest. If you implement something, update it here.
 
 ## What we are building
@@ -92,10 +101,10 @@ their reasoning are in [`decisions.md`](decisions.md).
 ## Current milestone
 
 **v0.1 — local, read-only.** Five tools exist: `system_info`, `system_health`,
-`container_list`, `container_health` and `storage_health`. `storage_health` and
-`system_info` run probes (decision 37); the other three still collect
-in-process, are pre-redesign, and are ported one at a time (decision 44 has the
-order and the checklist).
+`container_list`, `container_health` and `storage_health`. `storage_health`, `system_info` and
+`system_health` run probes (decision 37); `container_list` and
+`container_health` still collect in-process, are pre-redesign, and are ported
+one at a time (decision 44 has the order and the checklist).
 
 ## What actually exists
 
@@ -106,7 +115,7 @@ Everything, in full:
   Everything under `probes/` is a member but not a `default-member`, so
   `cargo build` does not build it.
 * A Rust binary crate (edition 2024) using `rmcp` 3.2.0.
-* Nine server source files. The seven below predate the probe work; the two
+* Seven server source files. The five below predate the probe work; the two
   after them are new:
   * `src/main.rs` (~152 lines) — MCP **stdio** server plus the complete
     model-facing surface. Every tool is declared here and every body does only
@@ -128,13 +137,6 @@ Everything, in full:
     on the blocking pool (decision 16), ask `guard` first (decision 25), and
     log the real `io::Error` to stderr while returning a flat message to the
     model (decision 9).
-  * `src/guard.rs` (~339 lines) — the read guard: the single chokepoint
-    deciding which paths the server may open, as an **allowlist** (decision 25).
-    `check` admits `EXACT` paths, `/proc/<pid>/comm` and a fixed set of cgroup
-    basenames; `check_dir` admits directory enumeration beneath
-    `/sys/fs/cgroup` only. `FORBIDDEN` sits underneath as a backstop against
-    careless widening. Its own unit tests are part of the control, and CI flags
-    any edit to the file.
   * `src/cgroup.rs` (~282 lines) — the cgroup v2 substrate: discovery by
     walking the hierarchy, and `classify`, the one function that knows how each
     container runtime names its scopes (decision 22).
@@ -145,7 +147,10 @@ Everything, in full:
     CPU use and throttling, memory against its limit, OOM kills, process count,
     full PSI, and `uptime_seconds` from the cgroup directory's timestamp
     (decision 27). Limits are reported by presence (decision 26).
-  * `src/system_health.rs` (~296 lines, mostly field documentation) — the
+  * ~~`src/system_health.rs`~~ — **moved to `probes/system-health/` and
+    `stethoscope_core::system_health` on 2026-09-23** (decision 45). What it
+    was:
+    the
     `SystemHealth` shape and its collector: `collected_at` (RFC 3339 UTC, from
     `/proc/stat`'s `btime` plus uptime, so it is the target's own clock —
     decision 19), uptime, load with the CPU count
@@ -182,22 +187,29 @@ Everything, in full:
   workspace root, then scans the outputs and fails if any of those paths
   survived (decision 33's 2026-09-18 amendment). Host architecture only; no
   cross-architecture matrix, manifest or archives.
-* `core/` — `stethoscope-core`, `no_std` + `alloc`, holding each probe's wire
-  types, one module per probe (`storage`, `system_info`), and nothing else yet
-  (decision 35). Probe and server link the same types, so there is one
-  definition of each wire format.
+* `core/` — `stethoscope-core`, `no_std` + `alloc`, and after decision 45 the
+  crate decision 35 described: each probe's wire types one module per probe
+  (`storage`, `system_health`, `system_info`); `guard`, the read allowlist with
+  its tests, which a probe asks before opening anything and the server asks for
+  its unported tools; `proc`, the parsers for the kernel formats, taking `&str`
+  and returning `Option`; and `time`, RFC 3339 by civil-from-days, tested a day
+  at a time across a century. Probe and server link the same code, so neither a
+  wire format nor an allowlist can drift between them.
 * `probes/rt/` — `stethoscope-probe-rt`, the freestanding runtime every probe
   links (decision 44): syscalls, `_start`, the panic handler and `mem*`
   intrinsics, the bump allocator, `privileged()`, `emit()`, and the `probe!`
   macro. A probe's own syscalls stay in the probe, so each binary's syscall set
-  is only what its capability uses.
+  is only what its capability uses. **`read_file` is the only place a probe
+  opens a file, and it asks core's guard first**; the open-family syscall
+  numbers are private to this crate, and a core test fails the build if any
+  other probe crate names one (decision 25).
 * Every tool takes a required `target`; anything other than `"local"` is
   rejected with `invalid_params` (decision 15). `container_health` takes a
   `container` ID alongside it (decision 26).
-* Server dependencies: `rmcp`, `tokio` (now with `process` and `time`), `serde`,
-  `chrono`, and — new with the prologue — `serde_json`, `sha2`, `libc` and the
-  `stethoscope-core` path dependency (decisions 14 and 41). `sha2` is also a
-  build-dependency.
+* Server dependencies: `rmcp`, `tokio` (with `process` and `time`), `serde`,
+  `serde_json`, `sha2`, `libc` and the `stethoscope-core` path dependency
+  (decisions 14, 41 and 45). `sha2` is also a build-dependency. **`chrono` is
+  gone**: core formats RFC 3339 itself.
 * `scripts/smoke.sh` — drives the server over stdio with real JSON-RPC and
   asserts fourteen things about the replies. Needs only `jq`; no MCP client, no
   Node, no test framework.
@@ -226,11 +238,22 @@ Everything, in full:
     `tools.json`, or a listed tool lacks `probe_location` or `privileged`.
 * `.github/workflows/ci.yml` — build, clippy (including the probe under its own
   profile), the unit tests, `cargo xtask dev` followed by `scripts/smoke.sh`,
-  and a job that flags any edit to `src/guard.rs` for review (decision 25).
+  and `detect-control-modifications`, which flags an edit to any file deciding
+  what may be read or run — `core/src/guard.rs`, `probes/rt/src/sys.rs` and
+  `src/prologue.rs` — for review (decision 25).
+* `.github/workflows/controls.yml` — the one check a pull request cannot
+  rewrite (decision 46). It runs from `main`'s copy of the file
+  (`pull_request_target`, never checking out or running the PR's code) and fails
+  any PR touching `.github/**`, `core/src/guard.rs`, `probes/rt/src/sys.rs` or
+  `src/prologue.rs` unless the triggering event *is* the `reviewed-controls`
+  label being applied — a label already sitting on the PR does not count, so a
+  push after review fails the check again (decision 46's amendment). **Not yet required by
+  branch protection**: it cannot run until it is on `main`.
 * `.github/workflows/prologue.yml` — builds once, runs the coverage gate, then
   one matrix job per tool in `tools.json` running both tiers, with unprivileged
   user namespaces enabled and a `stethoscope-other` user created. No path
-  filter. **First GitHub run (PR #3)**: the gate and the unprivileged tier
+  filter, and a `prologue complete` job giving the matrix one stable name for
+  branch protection to require (decision 46). **First GitHub run (PR #3)**: the gate and the unprivileged tier
   passed; the privileged tier's `/opt` cases failed because the runner's `/opt`
   is mode 777 — the prologue correctly refusing, the fixtures wrong. Fixed as
   above; decision 43's limits have the detail.
@@ -242,6 +265,11 @@ Everything, in full:
 * `probes/system-info/` — the `system_info` probe. 6,488 bytes; one `uname(2)`
   call, no file opened. Its syscalls, measured: `uname`, `write`, `mmap`,
   `exit`, and the three privilege calls.
+* `probes/system-health/` — the `system_health` probe. 44,616 bytes, three times
+  `storage-health` because it is the first probe to parse and format floats
+  (decision 45). Reads `/proc/{uptime,stat,loadavg,meminfo}` and the three
+  `/proc/pressure/*` files, all through core's guard. Carries its own
+  `round_half_away` and `pow10`, because `f64::round` and `f64::powi` are libm.
 * This documentation.
 
 Verified by `scripts/smoke.sh`: the handshake, all five tools advertised,
@@ -313,9 +341,10 @@ Described in `architecture.md`, **none of it exists in code**:
   documenting elevated probes; today it is a sentence in decision 32 and no
   code. One binary has now been disassembled by hand, and the result is a
   warning rather than a reassurance — see the finding below.
-* **Decision 37 exists for two tools.** `storage_health` and `system_info` run
-  probes placed in `~/.stethoscope`; the other three still collect in-process,
-  and the server still links their collectors and the read guard. That is the arrangement
+* **Decision 37 exists for three tools.** `storage_health`, `system_info` and
+  `system_health` run probes placed in `~/.stethoscope`; `container_list` and
+  `container_health` still collect in-process, so the server still links
+  `proc.rs`, `cgroup.rs` and — through core — the guard. That is the arrangement
   decision 37 replaces. The end state — a server carrying no collection code,
   executing a hash-verified probe from a directory it owns, on `local` as much
   as on a remote host — arrives capability by capability as each tool is ported,
@@ -325,7 +354,8 @@ Described in `architecture.md`, **none of it exists in code**:
 * Mutations of any kind.
 * Operator-facing logging beyond a single `eprintln!`.
 * Configuration of any kind — no config file, no CLI flags, no env vars.
-* Rust tests outside `src/guard.rs` and `src/prologue.rs`. `scripts/smoke.sh` is a black-box
+* Rust tests outside `core/src/guard.rs`, `core/src/time.rs`, `src/prologue.rs`
+  and `xtask/`. `scripts/smoke.sh` is a black-box
   protocol check, not a test suite — there is no `#[test]` anywhere else and no
   integration test using rmcp's client side. The parsing helpers added with
   `system_health` are the first code here with logic worth unit-testing against
@@ -825,11 +855,12 @@ from a harness, which is why deleting the harness cost nothing.
   real remote host — under decision 37 the chain runs on the development
   machine, so nothing about porting waits on open question 1 any more. Port
   them, verify locally, and only then worry about SSH.
-* **The core-crate extraction is the pilot's real work, not a preliminary.**
-  Decision 35: every collector's error type changes, `collected_at` needs an
-  RFC 3339 formatter that is not `chrono`, and the guard moves — taking its
-  tests, CI's `detect-guard-modifications` path, and the source-scan test's
-  scope with it. Budget for it accordingly.
+* ~~**The core-crate extraction is the pilot's real work, not a preliminary.**~~
+  **Done 2026-09-23** (decision 45): the guard, the parsers and RFC 3339 are in
+  core, the source-scan test scans the workspace, and CI's
+  `detect-control-modifications` path follows the file. The estimate was right
+  about the size of the job and wrong about the guard's cost in a probe — 3,344
+  bytes, not hundreds.
 * **Done 2026-09-18** — `guard.rs`'s module documentation now says the guard
   governs paths whose contents are read as collected data, and names the two
   things outside its remit: `statvfs` and the prologue. That edit is

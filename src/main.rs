@@ -15,11 +15,9 @@
 mod cgroup;
 mod container_health;
 mod container_list;
-mod guard;
 mod payload;
 mod proc;
 mod prologue;
-mod system_health;
 
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
@@ -30,8 +28,7 @@ use serde::Deserialize;
 use container_health::ContainerHealth;
 use container_list::ContainerList;
 use prologue::Collected;
-use stethoscope_core::{storage, system_info};
-use system_health::SystemHealth;
+use stethoscope_core::{storage, system_health, system_info};
 
 /// The only target that exists today.
 const LOCAL_TARGET: &str = "local";
@@ -126,9 +123,9 @@ impl StethoscopeMcp {
     async fn system_health(
         &self,
         Parameters(TargetParams { target }): Parameters<TargetParams>,
-    ) -> Result<Json<SystemHealth>, ErrorData> {
+    ) -> Result<Json<Collected<system_health::Report>>, ErrorData> {
         check_target(&target)?;
-        Ok(Json(system_health::collect(target).await?))
+        Ok(Json(prologue::collect("system-health", target).await?))
     }
 
     #[tool(

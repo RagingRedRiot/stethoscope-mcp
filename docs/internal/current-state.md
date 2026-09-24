@@ -95,7 +95,10 @@
 > (other users' containers, per-process data, the journal) are the ones most
 > likely to need elevation. A probe collects its whole capability, the server
 > narrows the result, and a `snapshot` id lets the model re-query one collection
-> — same-instant comparison, staleness never chosen for it. Nothing of it is
+> — same-instant comparison, staleness never chosen for it. The cache is one
+> in-memory pool for the whole server, bounded by count and by bytes, with each
+> entry naming its tool and target so an eviction is explainable and an id
+> cannot be presented to the wrong tool. Nothing of it is
 > built; `container_list` and `container_health` are the first users. The control
 > work merged separately as PR #5.
 >
@@ -646,7 +649,9 @@ Unresolved; do not assume an answer has been chosen.
     sees, which open question 10 argues against.
 
     Not built. The alternative is that ids are cheap to obtain — any call
-    returns one — so the cost of not listing them is one extra collection.
+    returns one — so the cost of not listing them is one extra collection. The
+    entries already carry what such a tool would show: tool, target, id,
+    `collected_at` and size (decision 47).
 
 ## Findings from building and running the probe (2026-09-17)
 

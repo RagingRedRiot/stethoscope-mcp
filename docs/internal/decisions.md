@@ -3103,7 +3103,11 @@ same tools take an optional `snapshot` input:
 * **present** — answer from that collection, `cached: true`;
 * **unknown or evicted** — fail with `snapshot_expired`, **never silently
   collect fresh**. Substituting new data for the collection the model named
-  would break the property it asked for.
+  would break the property it asked for;
+* **belonging to another tool or target** — fail with `snapshot_mismatch`. The
+  server checks; an id is not a bearer token for whatever happens to be in
+  memory, and a storage collection answering a container question would be a
+  confusion worth naming rather than an error worth hiding.
 
 **That property is same-instant comparison.** Two rows from one snapshot were
 measured together, which is the correct basis for "is this container starved
@@ -3115,13 +3119,32 @@ only by it.
 (decision 19). The server does not compute an age, because subtracting its own
 clock from the target's assumes the two agree.
 
-**The cache is in memory and bounded.** Per target and capability, the ten most
-recent collections, evicted oldest-first; nothing is written to disk; everything
-is gone when the process exits. Decision 31's reasoning applies unchanged —
-ephemeral state, the recovery procedure for any cache weirdness is "restart",
-and a fleet's worth of measurements is not left on disk for a backup to carry
-off. Eviction is a memory bound, not a freshness policy, which is why an evicted
-id is an error rather than a quiet re-collection.
+**The cache is in memory, server-wide, and bounded twice over.** One pool
+across every tool and target — a session works one target at a time far more
+often than it works ten — holding **the hundred most recent collections within
+a byte budget**, least recently used evicted first. (Revised from ten per tool
+and target before anything was built: a session spanning several targets would
+have thrashed, and a count alone bounds nothing. `system_info` is a couple of
+hundred bytes and `container_health` on a large host is megabytes, so entries
+are held as the bytes the probe emitted and measured exactly.)
+
+Each entry records the tool, the target, its id, its `collected_at` and its
+size. That is what makes an eviction explainable rather than mysterious, what
+lets the server check an id belongs where it is presented, and what a listing
+would show if open question 17 is ever answered.
+
+Nothing is written to disk and everything is gone when the process exits.
+Decision 31's reasoning applies unchanged — ephemeral state, the recovery
+procedure for any cache weirdness is "restart", and a fleet's worth of
+measurements is not left on disk for a backup to carry off. Eviction is a memory
+bound, not a freshness policy, which is why an evicted id is an error rather
+than a quiet re-collection.
+
+**The server manages the cache; the model only needs to know the rule.** The MCP
+`instructions` say what it is — one pool, the most recent collections, least
+recently used evicted, an id that fails once its collection is gone — so the
+model can decide whether to keep an id or simply collect again. It never asks
+for an eviction, a size or a lifetime.
 
 **The model has to know the pattern, or it never uses it.** The server's MCP
 `instructions` gain a sentence describing it, and the `snapshot` field's schema
@@ -3146,8 +3169,16 @@ Recorded limits:
   unless they share one session. Sharing across sessions would mean a daemon with
   its own lifetime and identity, which decision 2 refuses. The win here is within
   a session, where one collection answers many questions.
-* **Ten entries per target and capability is a guess**, like decision 31's TTL.
-  It bounds memory at roughly ten payloads rather than at a measured working set.
+* **A hundred entries and the byte budget are guesses**, like decision 31's TTL.
+  Neither comes from a measured working set, and the byte figure should be
+  chosen against a real `container_health` payload from a busy host rather than
+  picked now.
+* **One pool means one target's collections can evict another's.** A capability
+  that produces large payloads on a busy target will push a small, cheap
+  collection out sooner than a per-target reservation would. Accepted for
+  simplicity: a session ordinarily works one target at a time, and the cost of
+  losing an id is one more collection. A per-key floor is the fix if this ever
+  bites.
 * **The cache is model-visible, which earlier decisions avoided.** Open question
   10 says a model should not need to know a cache exists. A snapshot id is
   exactly that knowledge — accepted here because the model is the only party that

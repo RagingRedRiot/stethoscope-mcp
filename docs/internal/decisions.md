@@ -3037,6 +3037,17 @@ Recorded limits:
   and it gets no secrets and a read-only token, so the consequence is a
   misleading badge rather than a compromise. The label requirement is what makes
   a control change visible before a merge.
+
+  **Narrowed 2026-09-24 by a repository setting**, matching the relay project:
+  the fork-PR approval policy is `all_external_contributors`, not GitHub's
+  default of first-time contributors only. No workflow runs on an external
+  contributor's pull request until a maintainer approves the run, so an
+  unapproved fork PR shows no checks at all rather than checks it wrote itself
+  — and the required checks never report, which blocks the merge. Approving a
+  run still executes that PR's code on a runner, which is what the read-only
+  token and the absence of secrets are for. The setting is
+  `actions/permissions/fork-pr-contributor-approval`, outside the repository
+  tree, so it is recorded here rather than being visible in a diff.
 * **Nothing here verifies the artifact.** These are all source-level controls
   and assume the binary was built from the reviewed source; decision 39's
   disassembly check is still the missing half.

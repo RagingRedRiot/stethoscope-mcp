@@ -1,0 +1,12 @@
+[package]
+name = "stethoscope-system-info"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The types come from core, the runtime from probes/rt. Size and panic settings
+# come from [profile.probe] at the workspace root, and the freestanding link
+# flags from build.rs (decision 33).
+[dependencies]
+stethoscope-core = { path = "../../core" }
+stethoscope-probe-rt = { path = "../rt" }

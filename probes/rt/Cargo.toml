@@ -1,0 +1,14 @@
+[package]
+name = "stethoscope-probe-rt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The freestanding runtime every probe links: syscalls, entry, allocator, panic
+# handler, and the one way a probe emits its report. It builds only as part of
+# a probe, under [profile.probe] — its #[panic_handler] has no meaning in a std
+# build — so, like the probes, it is not a default workspace member.
+[dependencies]
+stethoscope-core = { path = "../../core" }
+serde = { version = "1.0.229", default-features = false }
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }

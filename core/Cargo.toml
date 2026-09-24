@@ -1,0 +1,12 @@
+[package]
+name = "stethoscope-core"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# no_std + alloc, so it links into the probes unchanged and into the server
+# without ceremony (decision 35). Today it holds the storage wire types and
+# nothing else; collection moves in when the pilot's extraction does.
+[dependencies]
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
+schemars = { version = "1.2.2", default-features = false, features = ["derive"] }

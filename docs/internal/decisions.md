@@ -2864,6 +2864,10 @@ argument that a probe cannot receive — either it reports every container and
 the server selects, or decision 39's constraint is revisited. That choice is
 not made here.
 
+> **Settled 2026-09-24 by decision 47**: it reports every container and the
+> server selects. Decision 39's constraint is confirmed as architectural rather
+> than revisited, and snapshots make one collection answer several questions.
+
 Recorded limits:
 
 * **The runtime is still x86_64-only.** Two probes now depend on it, which
@@ -3051,3 +3055,101 @@ Recorded limits:
 * **Nothing here verifies the artifact.** These are all source-level controls
   and assume the binary was built from the reviewed source; decision 39's
   disassembly check is still the missing half.
+
+### 47. A probe collects its whole capability; the model narrows the result, and may re-query one collection by id — accepted, **confirms decision 39's standing constraint and settles decision 44's open parameter question**
+
+**No probe takes an identifier — not a container, not a pid, not a unit — and
+this is architecture rather than an accident of the capabilities built so far.**
+Decision 39 already said it ("probes must never read `argv` or `environ`... a
+future capability that wants a parameter must be told no"); this decision is
+where it stops being a sentence in a decision about elevation and becomes the
+shape every capability is designed to.
+
+**Why it has to hold for every probe, not most of them.** Decision 39's table —
+no dynamic linker, no libc, no argument parsing, no environment parsing, no
+config, no subprocess — is what makes granting a probe file capabilities
+defensible. Its value is that it describes the *class*. If some probes take
+arguments and others do not, an operator granting `setcap` must first know which
+kind a binary is, and the CI disassembly check must encode that too; "probes take
+no arguments" stops being inspectable and becomes a per-binary claim.
+
+**And the capabilities most likely to want a parameter are the ones most likely
+to need elevation.** `storage_health` wanted neither: the 2026-09-17
+measurements found elevation bought it nothing. Enumerating another user's
+rootless containers, reading per-process data the invoking user does not own, or
+reading the journal are all plausibly privileged — and all three are exactly the
+capabilities where "just one container" or "just one pid" is tempting. Trading
+the property away would trade it where it matters most.
+
+**So a probe collects its whole capability and the server narrows the result.**
+`container_health` emits a row per container; the server returns the one the
+model asked for and keeps the rest. The model-facing surface is unchanged —
+decision 26's per-container addressing stands — and what changes is where the
+narrowing happens.
+
+**The cost is accepted, deliberately.** Collection scales with the machine
+rather than with the question: a host with a thousand containers walks a
+thousand cgroups to answer one. Correctness about what a probe *is* outranks the
+cost of what it does, and the reuse below is what makes the cost bearable rather
+than the reason for the design.
+
+## Snapshots
+
+**Every probe-backed tool's response carries `snapshot`, an opaque id for the
+collection it came from, and `cached`, true when it was served from one.** The
+same tools take an optional `snapshot` input:
+
+* **absent** — run the probe now, a full collection, `cached: false`;
+* **present** — answer from that collection, `cached: true`;
+* **unknown or evicted** — fail with `snapshot_expired`, **never silently
+  collect fresh**. Substituting new data for the collection the model named
+  would break the property it asked for.
+
+**That property is same-instant comparison.** Two rows from one snapshot were
+measured together, which is the correct basis for "is this container starved
+while that one saturates the disk". A time-to-live cache cannot say that, which
+is why this is a handle and not a TTL: staleness is never chosen for the model,
+only by it.
+
+**`collected_at` always comes from the probe, untouched** — the target's clock
+(decision 19). The server does not compute an age, because subtracting its own
+clock from the target's assumes the two agree.
+
+**The cache is in memory and bounded.** Per target and capability, the ten most
+recent collections, evicted oldest-first; nothing is written to disk; everything
+is gone when the process exits. Decision 31's reasoning applies unchanged —
+ephemeral state, the recovery procedure for any cache weirdness is "restart",
+and a fleet's worth of measurements is not left on disk for a backup to carry
+off. Eviction is a memory bound, not a freshness policy, which is why an evicted
+id is an error rather than a quiet re-collection.
+
+**The model has to know the pattern, or it never uses it.** The server's MCP
+`instructions` gain a sentence describing it, and the `snapshot` field's schema
+documentation says when to pass one back: to read another container from the
+same instant, or to re-read without re-collecting. If the model never
+cooperates, every call simply collects fresh — the failure mode is cost, not
+wrongness.
+
+Recorded limits:
+
+* **Every future capability must be expressible as "collect all of this kind",
+  and logs will be the hard case.** Nobody collects every log line to answer a
+  question about one unit. When that capability arrives the honest options are a
+  bounded collection (the last N lines of everything), a mechanism that is not a
+  probe, or revisiting this rule deliberately — not a parameter smuggled in
+  because it is convenient.
+* **The ten-second deadline is per call and may not fit every capability.** A
+  large walk is the case that will find out. Making the deadline per capability
+  is the obvious answer and is not built.
+* **Concurrent agents do not share a cache.** A stdio server is one process per
+  client session (decision 29), so two agents are two processes with two caches
+  unless they share one session. Sharing across sessions would mean a daemon with
+  its own lifetime and identity, which decision 2 refuses. The win here is within
+  a session, where one collection answers many questions.
+* **Ten entries per target and capability is a guess**, like decision 31's TTL.
+  It bounds memory at roughly ten payloads rather than at a measured working set.
+* **The cache is model-visible, which earlier decisions avoided.** Open question
+  10 says a model should not need to know a cache exists. A snapshot id is
+  exactly that knowledge — accepted here because the model is the only party that
+  can decide a stale reading is acceptable, and it cannot decide that about a
+  cache it cannot see.

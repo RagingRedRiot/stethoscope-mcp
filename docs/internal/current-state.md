@@ -88,6 +88,17 @@
 > 44,616 bytes — three times `storage-health` — because it is the first probe to
 > parse and format floats. Only the two container tools are left in-process.
 >
+> Updated 2026-09-24. **Decision 47 settles how a capability that addresses one
+> thing works**: no probe takes an identifier — not a container, a pid or a unit
+> — because decision 39's "probes take no arguments" is only worth anything if it
+> holds for every probe, and the capabilities most likely to want a parameter
+> (other users' containers, per-process data, the journal) are the ones most
+> likely to need elevation. A probe collects its whole capability, the server
+> narrows the result, and a `snapshot` id lets the model re-query one collection
+> — same-instant comparison, staleness never chosen for it. Nothing of it is
+> built; `container_list` and `container_health` are the first users. The control
+> work merged separately as PR #5.
+>
 > Keep this file honest. If you implement something, update it here.
 
 ## What we are building
@@ -620,6 +631,22 @@ Unresolved; do not assume an answer has been chosen.
     without refusing the location. Not a decision — it needs one, and probably
     folds into open question 14, since both are about what other versions' files
     mean.
+
+17. **Whether the snapshot cache should be listable.** Decision 47 gives each
+    collection an id the model can pass back. Nothing lets a model discover
+    which ids exist, what tool and target each belongs to, or how old each is —
+    a model that did not keep an id has to collect again, and an agent joining a
+    session mid-way has no way to find one.
+
+    A tool for it breaks two things worth weighing rather than brushing aside.
+    Decision 15 requires every tool to take a target, and a listing of
+    collections across targets cannot; that is the same carve-out open question
+    9 needs for a `targets` tool, and both should be settled together. And it
+    makes the cache a thing the model manages rather than a thing it merely
+    sees, which open question 10 argues against.
+
+    Not built. The alternative is that ids are cheap to obtain — any call
+    returns one — so the cost of not listing them is one extra collection.
 
 ## Findings from building and running the probe (2026-09-17)
 

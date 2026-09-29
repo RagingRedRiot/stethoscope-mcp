@@ -1,0 +1,104 @@
+name: Prologue
+
+# The probe prologue's constraints, checked for every probe-backed tool.
+#
+# The cases are written once (scripts/prologue/) and run per tool from
+# scripts/prologue/tools.json. Adding a probe-backed tool means adding one line
+# there; the coverage gate in `plan` fails the run if a tool reports
+# probe_location but is not listed.
+#
+# No path filter, deliberately: almost any change — src/, core/, probes/,
+# xtask/, build.rs — can break the prologue, and a filter that misses one path
+# is a check that silently stops running.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build server and probes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask dev --locked
+      # tar keeps the exec bits, which upload-artifact does not.
+      - run: tar -cf prologue-build.tar target/debug/stethoscope-mcp target/payload
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prologue-build
+          path: prologue-build.tar
+          retention-days: 1
+
+  plan:
+    name: coverage gate
+    needs: build
+    runs-on: ubuntu-24.04
+    outputs:
+      tools: ${{ steps.matrix.outputs.tools }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: prologue-build
+      - run: tar -xf prologue-build.tar
+      - run: ./scripts/prologue/coverage.sh
+      - id: matrix
+        run: echo "tools=$(jq -c '[.[].tool]' scripts/prologue/tools.json)" >> "$GITHUB_OUTPUT"
+
+  prologue:
+    name: prologue (${{ matrix.tool }})
+    needs: plan
+    # Pinned: the userns sysctl below is specific to Ubuntu 24.04's AppArmor policy.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.plan.outputs.tools) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: prologue-build
+      - run: tar -xf prologue-build.tar
+
+      - name: Prepare fixtures' prerequisites
+        run: |
+          sudo apt-get install -y -qq jq libcap2-bin
+          # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
+          # unprivileged tier's /opt cases need them, and --require-all turns
+          # a skip into a failure rather than letting them pass silently.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # A real third user, for the ownership cases.
+          sudo useradd --no-create-home stethoscope-other
+
+      - name: Unprivileged tier
+        run: ./scripts/prologue/unprivileged.sh --tool "${{ matrix.tool }}" --require-all
+
+      # sudo builds fixtures only; the server runs as the runner user.
+      - name: Privileged tier
+        run: ./scripts/prologue/privileged.sh --tool "${{ matrix.tool }}" --require-all
+
+  # One stable name for the whole matrix, so branch protection can require it:
+  # a required check is matched by name, and the matrix's own names change as
+  # tools are added to tools.json. `if: always()` is what makes a skipped or
+  # cancelled leg a failure here rather than a silent pass.
+  complete:
+    name: prologue complete
+    needs: [build, plan, prologue]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every prologue job succeeded
+        run: |
+          echo "build=${{ needs.build.result }} plan=${{ needs.plan.result }} prologue=${{ needs.prologue.result }}"
+          test "${{ needs.build.result }}" = success \
+            && test "${{ needs.plan.result }}" = success \
+            && test "${{ needs.prologue.result }}" = success

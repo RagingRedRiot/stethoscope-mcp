@@ -15,10 +15,9 @@
 mod cgroup;
 mod container_health;
 mod container_list;
-mod guard;
+mod payload;
 mod proc;
-mod system_health;
-mod system_info;
+mod prologue;
 
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
@@ -28,8 +27,8 @@ use serde::Deserialize;
 
 use container_health::ContainerHealth;
 use container_list::ContainerList;
-use system_health::SystemHealth;
-use system_info::SystemInfo;
+use prologue::Collected;
+use stethoscope_core::{storage, system_health, system_info};
 
 /// The only target that exists today.
 const LOCAL_TARGET: &str = "local";
@@ -73,7 +72,10 @@ fn check_target(target: &str) -> Result<(), ErrorData> {
 }
 
 /// The server itself holds no state. `#[tool_handler]` builds the tool router
-/// on demand, so there is nothing to construct or carry.
+/// on demand, so there is nothing to construct or carry. Probes are resolved
+/// from the filesystem on every call rather than cached (decision 31 leaves
+/// `local` open; resolving costs microseconds and running the whole chain every
+/// call is the point of decision 37).
 struct StethoscopeMcp;
 
 #[tool_router]
@@ -85,9 +87,9 @@ impl StethoscopeMcp {
     async fn system_info(
         &self,
         Parameters(TargetParams { target }): Parameters<TargetParams>,
-    ) -> Result<Json<SystemInfo>, ErrorData> {
+    ) -> Result<Json<Collected<system_info::Report>>, ErrorData> {
         check_target(&target)?;
-        Ok(Json(system_info::collect(target).await?))
+        Ok(Json(prologue::collect("system-info", target).await?))
     }
 
     #[tool(
@@ -121,9 +123,21 @@ impl StethoscopeMcp {
     async fn system_health(
         &self,
         Parameters(TargetParams { target }): Parameters<TargetParams>,
-    ) -> Result<Json<SystemHealth>, ErrorData> {
+    ) -> Result<Json<Collected<system_health::Report>>, ErrorData> {
         check_target(&target)?;
-        Ok(Json(system_health::collect(target).await?))
+        Ok(Json(prologue::collect("system-health", target).await?))
+    }
+
+    #[tool(
+        name = "storage_health",
+        description = "Capacity of every filesystem on a target machine: bytes and blocks total, free and available to unprivileged writers, inodes where the filesystem has them, and whether it is mounted read-only. Mounts that could not be measured are listed with the reason rather than omitted. Raw numbers only, with no thresholds or verdicts applied; the output schema describes how to read them."
+    )]
+    async fn storage_health(
+        &self,
+        Parameters(TargetParams { target }): Parameters<TargetParams>,
+    ) -> Result<Json<Collected<storage::Report>>, ErrorData> {
+        check_target(&target)?;
+        Ok(Json(prologue::collect("storage-health", target).await?))
     }
 }
 
@@ -146,6 +160,16 @@ impl ServerHandler for StethoscopeMcp {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if payload::PAYLOADS
+        .iter()
+        .all(|p| p.arch != std::env::consts::ARCH)
+    {
+        eprintln!(
+            "stethoscope-mcp: this build carries no probes for {}, so probe-backed tools will fail. \
+             Build with `cargo xtask dev`, not `cargo build`.",
+            std::env::consts::ARCH
+        );
+    }
     let service = StethoscopeMcp.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

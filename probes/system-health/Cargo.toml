@@ -1,0 +1,11 @@
+[package]
+name = "stethoscope-system-health"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The types, the parsers, the read guard and RFC 3339 formatting come from
+# core; the runtime from probes/rt.
+[dependencies]
+stethoscope-core = { path = "../../core" }
+stethoscope-probe-rt = { path = "../rt" }

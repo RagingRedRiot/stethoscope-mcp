@@ -63,11 +63,16 @@ jobs:
             esac
           }
 
+          # Assigned first, not read through `< <(...)`: set -e cannot see a
+          # failure inside a process substitution, so a failed API call would
+          # read as "no files changed" and pass.
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+
           touched=()
           while IFS= read -r file; do
             [ -z "$file" ] && continue
             if is_control "$file"; then touched+=("$file"); fi
-          done < <(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          done <<< "$files"
 
           if [ ${#touched[@]} -eq 0 ]; then
             echo "No control file touched."
